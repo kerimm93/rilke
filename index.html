@@ -306,6 +306,23 @@ function load() {
     if (d) { var p = JSON.parse(d); if (p && p.cards) S = p; }
   } catch(e) { console.error('Load failed', e); }
   if (!S.cards) S.cards = [];
+  var sidMigrationCount = 0;
+  for (var i = 0; i < S.cards.length; i++) {
+    var card = S.cards[i];
+    if (!card || card.sid === null || card.sid === undefined) continue;
+    var rawSid = String(card.sid).trim();
+    if (!rawSid) continue;
+    var hasDot = rawSid.indexOf('.') !== -1;
+    var hasDigit = /\d/.test(rawSid);
+    var hasLetter = /[a-zA-Z]/.test(rawSid);
+    if (hasDot || !hasDigit || !hasLetter) continue;
+    var migratedSid = normalizeSid(rawSid);
+    if (!migratedSid) continue;
+    if (migratedSid !== rawSid) {
+      card.sid = migratedSid;
+      sidMigrationCount++;
+    }
+  }
   if (!S.pairRelations) S.pairRelations = [];
   if (!S.compositions) S.compositions = [];
   if (!S.matrixSessions) S.matrixSessions = [];
@@ -313,6 +330,10 @@ function load() {
   if (!S.config) S.config = {};
   if (!S.config.matrixCols) S.config.matrixCols = 5;
   if (!S.config.matrixRows) S.config.matrixRows = 4;
+  if (sidMigrationCount > 0) {
+    persistLocalOnly();
+    console.log('SID migration applied to ' + sidMigrationCount + ' cards');
+  }
 }
 
 // ─── Card helpers ───
