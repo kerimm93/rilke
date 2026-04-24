@@ -289,9 +289,13 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s 
 function $(id) { return document.getElementById(id); }
 
 // ─── Persistence ───
+function persistLocalOnly() {
+  try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch(e) { console.error('Save failed', e); }
+}
+
 function save() {
   S._lastExported = now();
-  try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch(e) { console.error('Save failed', e); }
+  persistLocalOnly();
 }
 var _saveTimer = null;
 function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(save, 400); }
@@ -316,6 +320,92 @@ function findCard(u) { return S.cards.find(function(c){return c.uid===u}); }
 function rootCards() { return S.cards.filter(function(c){return !c.parentUid && c.status!=='archived'}).sort(function(a,b){return a.order-b.order}); }
 function childrenOf(parentUid) { return S.cards.filter(function(c){return c.parentUid===parentUid && c.status!=='archived'}).sort(function(a,b){return a.order-b.order}); }
 function allActiveCards() { return S.cards.filter(function(c){return c.status!=='archived'}); }
+
+// ─── SID helpers ───
+function parseSid(sid) {
+  if (sid === null || sid === undefined) return [];
+  var raw = String(sid).trim();
+  if (!raw) return [];
+  var normalized = normalizeSid(raw);
+  if (!normalized) return [];
+  return normalized.split('.').filter(function(part){ return !!part; });
+}
+
+function buildSid(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+  if (!isValidSidParts(parts)) return '';
+  return parts.join('.');
+}
+
+function legacySidToParts(sid) {
+  if (sid === null || sid === undefined) return [];
+  var raw = String(sid).trim();
+  if (!raw) return [];
+  var cleaned = raw.replace(/\s+/g, '');
+  var m = cleaned.match(/\d+|[a-zA-Z]+/g);
+  if (!m || m.length === 0) return [];
+  return m.map(function(part){
+    return /^[a-zA-Z]+$/.test(part) ? part.toLowerCase() : String(parseInt(part, 10));
+  }).filter(function(part){
+    return part !== 'NaN' && part !== '';
+  });
+}
+
+function normalizeSid(sid) {
+  if (sid === null || sid === undefined) return '';
+  var raw = String(sid).trim();
+  if (!raw) return '';
+  var cleaned = raw.replace(/\s+/g, '').replace(/_/g, '.').replace(/-/g, '.');
+  var hasDots = cleaned.indexOf('.') !== -1;
+  var parts = hasDots
+    ? cleaned.split('.').filter(function(part){ return part !== ''; }).map(function(part){
+        return /^[a-zA-Z]+$/.test(part) ? part.toLowerCase() : part;
+      })
+    : legacySidToParts(cleaned);
+  if (!isValidSidParts(parts)) return '';
+  return buildSid(parts);
+}
+
+function isValidSidParts(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) return false;
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (p === null || p === undefined) return false;
+    var s = String(p).trim();
+    if (!s) return false;
+    if (i % 2 === 0) {
+      if (!/^\d+$/.test(s)) return false;
+    } else {
+      if (!/^[a-z]+$/i.test(s)) return false;
+    }
+  }
+  return true;
+}
+
+function getParentSidParts(parts) {
+  if (!Array.isArray(parts) || parts.length <= 1) return [];
+  return parts.slice(0, -1);
+}
+
+function isDirectChildSid(parentParts, candidateParts) {
+  if (!isValidSidParts(parentParts) || !isValidSidParts(candidateParts)) return false;
+  if (candidateParts.length !== parentParts.length + 1) return false;
+  for (var i = 0; i < parentParts.length; i++) {
+    if (String(parentParts[i]) !== String(candidateParts[i])) return false;
+  }
+  return true;
+}
+
+function isSidPrefix(parentSid, candidateSid) {
+  var parentParts = parseSid(parentSid);
+  var candidateParts = parseSid(candidateSid);
+  if (!isValidSidParts(parentParts) || !isValidSidParts(candidateParts)) return false;
+  if (parentParts.length >= candidateParts.length) return false;
+  for (var i = 0; i < parentParts.length; i++) {
+    if (String(parentParts[i]) !== String(candidateParts[i])) return false;
+  }
+  return true;
+}
 
 function nextSid(parentUid) {
   if (!parentUid) { return String(rootCards().length + 1); }
