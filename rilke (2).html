@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rilke — Gedichtezettelkasten</title>
+<style>
+/* ═══ RESET & VARS ═══ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f6f1dc;--bg-2:#f2e9c9;--surface:#fff9e6;--surface-2:#fffdf4;
+  --border:#e6d9a8;--border-strong:#d4c27a;
+  --ink:#2a2a2a;--ink-light:#6b6b5a;--ink-dim:#9a9278;
+  --accent:#c9a227;--accent-soft:#e8d98a;
+  --red:#c75c5c;--green:#6f9e6e;
+  --neighbor-bg:#f4f8f0;--neighbor-border:#b8d4a8;
+  --body:'Helvetica Neue',Helvetica,Arial,sans-serif;
+  --mono:'Courier New',Courier,monospace;
+  --serif:Georgia,serif;
+  --r:6px;
+  --shadow:0 1px 3px rgba(0,0,0,0.06);
+  --shadow-lg:0 3px 10px rgba(0,0,0,0.08);
+}
+html{font-size:15px}
+body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
+input,textarea,select,button{font-family:inherit;font-size:inherit;color:inherit}
+button{cursor:pointer}
+a{color:var(--accent);text-decoration:none}
+
+/* ═══ LAYOUT ═══ */
+.app-header{background:var(--surface-2);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.app-title{font-size:1.25rem;font-weight:600;letter-spacing:0.02em;color:var(--ink)}
+.app-title span{color:var(--ink-dim);font-weight:400;font-size:0.85rem;margin-left:6px}
+.tab-bar{display:flex;gap:2px;margin-left:auto}
+.tab-btn{padding:7px 16px;border:1px solid var(--border);background:transparent;border-radius:var(--r);font-size:0.85rem;color:var(--ink-light);transition:all .15s}
+.tab-btn:hover{background:var(--bg-2)}
+.tab-btn.active{background:var(--accent-soft);border-color:var(--border-strong);color:var(--ink);font-weight:500}
+
+.main{display:flex;flex:1;min-height:0;height:calc(100vh - 52px)}
+.panel{overflow-y:auto;padding:16px}
+.panel-left{width:280px;min-width:220px;border-right:1px solid var(--border);background:var(--surface-2)}
+.panel-center{flex:1;min-width:0;background:var(--bg)}
+.panel-right{width:300px;min-width:240px;border-left:1px solid var(--border);background:var(--surface-2)}
+
+/* ═══ CARDS ═══ */
+.card-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--shadow)}
+.card-item:hover{border-color:var(--border-strong);box-shadow:var(--shadow-lg)}
+.card-item.selected{border-color:var(--accent);background:var(--surface-2);box-shadow:0 0 0 2px var(--accent-soft)}
+.card-item .sid{font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim);margin-right:6px}
+.card-item .text{font-size:0.9rem;color:var(--ink)}
+.card-item .comment{font-size:0.8rem;color:var(--ink-dim);margin-top:4px;font-style:italic}
+.child-indent{margin-left:16px;border-left:2px solid var(--border);padding-left:8px}
+
+/* ═══ DETAIL PANEL ═══ */
+.detail-section{margin-bottom:20px}
+.detail-label{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-dim);margin-bottom:6px;font-weight:500}
+.detail-text{font-size:1rem;line-height:1.6;white-space:pre-wrap}
+.detail-comment{font-size:0.9rem;color:var(--ink-light);font-style:italic;line-height:1.5;white-space:pre-wrap}
+.detail-meta{font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim)}
+
+/* ═══ BUTTONS ═══ */
+.btn{padding:6px 14px;border:1px solid var(--border);background:var(--surface);border-radius:var(--r);font-size:0.82rem;color:var(--ink-light);transition:all .12s;display:inline-flex;align-items:center;gap:5px}
+.btn:hover{background:var(--bg-2);border-color:var(--border-strong);color:var(--ink)}
+.btn-accent{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+.btn-accent:hover{background:var(--accent);color:#fff}
+.btn-danger{border-color:var(--red);color:var(--red)}
+.btn-danger:hover{background:var(--red);color:#fff}
+.btn-sm{padding:4px 10px;font-size:0.78rem}
+.btn-group{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+
+/* ═══ FORMS ═══ */
+.field{margin-bottom:12px}
+.field label{display:block;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-dim);margin-bottom:4px;font-weight:500}
+.field input,.field textarea,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.9rem;outline:none;transition:border-color .12s}
+.field input:focus,.field textarea:focus{border-color:var(--accent)}
+.field textarea{resize:vertical;min-height:80px;line-height:1.5}
+
+/* ═══ SEARCH ═══ */
+.search-box{position:relative;margin-bottom:12px}
+.search-box input{width:100%;padding:7px 10px 7px 30px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.85rem}
+.search-box::before{content:'⌕';position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--ink-dim);font-size:0.9rem}
+
+/* ═══ MODAL ═══ */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.25);z-index:100;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .15s}
+.modal-overlay.open{opacity:1;pointer-events:auto}
+.modal{background:var(--surface-2);border:1px solid var(--border);border-radius:calc(var(--r)*2);padding:24px;width:90%;max-width:520px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+.modal h3{font-size:1.05rem;margin-bottom:16px;color:var(--ink);font-weight:600}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+
+/* ═══ BRAINSTORM ═══ */
+.brainstorm-toolbar{display:flex;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface-2);flex-wrap:wrap}
+.brainstorm-board{position:relative;flex:1;overflow:auto;background:var(--bg);background-image:
+  radial-gradient(circle, var(--border) 0.5px, transparent 0.5px);
+  background-size:28px 28px;
+  min-height:400px;
+}
+.brainstorm-card{position:absolute;width:152px;min-height:76px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:9px 11px;font-size:0.78rem;line-height:1.35;cursor:pointer;transition:border-color .15s, box-shadow .15s, background .15s;overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+.brainstorm-card:hover{border-color:var(--border-strong);box-shadow:var(--shadow-lg)}
+.brainstorm-card.active{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 3px var(--accent-soft),var(--shadow-lg);z-index:10}
+.brainstorm-card.neighbor{border-color:var(--neighbor-border);background:var(--neighbor-bg);box-shadow:0 0 0 2px rgba(111,158,110,0.18);z-index:5}
+.brainstorm-card .sid{font-family:var(--mono);font-size:0.65rem;color:var(--ink-dim)}
+.brainstorm-card .text{margin-top:3px;color:var(--ink)}
+
+.connection-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px;box-shadow:var(--shadow);transition:all .12s}
+.connection-item.interesting{border-color:var(--accent);border-left:3px solid var(--accent);background:var(--surface-2)}
+.connection-header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.connection-direction{font-size:0.7rem;color:var(--ink-dim);text-transform:uppercase;letter-spacing:0.04em;font-weight:500}
+.connection-text{font-size:0.85rem;color:var(--ink);line-height:1.4}
+.connection-note{font-size:0.8rem;color:var(--ink-light);font-style:italic;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+
+.focus-card-box{background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--r);padding:12px;margin-bottom:16px}
+.focus-card-box .sid{font-family:var(--mono);font-size:0.72rem;color:var(--ink-dim)}
+.focus-card-box .text{font-size:0.92rem;margin-top:4px;line-height:1.45}
+
+/* kept for card-mode relations list */
+.relation-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;box-shadow:var(--shadow)}
+.relation-item.interesting{border-color:var(--accent);background:var(--surface-2)}
+.relation-pair{font-size:0.82rem;margin-bottom:4px}
+.relation-pair .sid{font-family:var(--mono);font-size:0.72rem;color:var(--ink-dim)}
+.relation-note{font-size:0.8rem;color:var(--ink-light);font-style:italic;margin-top:4px}
+
+/* ═══ COMPOSITION ═══ */
+.comp-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--shadow)}
+.comp-item:hover{border-color:var(--border-strong)}
+.comp-item.selected{border-color:var(--accent);background:var(--surface-2)}
+.comp-card{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px}
+.comp-card .handle{cursor:grab;color:var(--ink-dim);user-select:none;font-size:1.1rem;line-height:1}
+.comp-card .text{flex:1;font-size:0.88rem}
+.comp-card .sid{font-family:var(--mono);font-size:0.7rem;color:var(--ink-dim);white-space:nowrap}
+
+.preview-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px;line-height:1.8;font-size:0.95rem;white-space:pre-wrap;min-height:120px;font-family:var(--serif)}
+
+/* ═══ EMPTY STATES ═══ */
+.empty{text-align:center;padding:40px 20px;color:var(--ink-dim);font-size:0.9rem;line-height:1.6}
+.empty .icon{font-size:2rem;margin-bottom:8px;opacity:0.4}
+
+/* ═══ SPLIT PREVIEW ═══ */
+.split-preview-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;margin-bottom:6px;font-size:0.88rem}
+.split-preview-item .num{font-family:var(--mono);font-size:0.72rem;color:var(--ink-dim);margin-right:6px}
+
+/* ═══ STATUS ═══ */
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px}
+.status-dot.draft{background:var(--ink-dim)}
+.status-dot.active{background:var(--green)}
+.status-dot.archived{background:var(--red)}
+
+/* ═══ TOAST ═══ */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--ink);color:var(--surface);padding:10px 20px;border-radius:var(--r);font-size:0.85rem;z-index:200;opacity:0;transition:all .25s}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ═══ RESPONSIVE ═══ */
+@media(max-width:900px){
+  .main{flex-direction:column;height:auto}
+  .panel-left,.panel-right{width:100%;border:none;border-bottom:1px solid var(--border)}
+  .panel-right{border-bottom:none;border-top:1px solid var(--border)}
+  .brainstorm-board{min-height:350px}
+  .brainstorm-card{width:120px;min-height:60px;font-size:0.72rem}
+}
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-title">Rilke <span>Gedichtezettelkasten</span></div>
+  <nav class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('cards')">Karten</button>
+    <button class="tab-btn" onclick="switchTab('brainstorm')">Brainstorm</button>
+    <button class="tab-btn" onclick="switchTab('composition')">Komposition</button>
+  </nav>
+</header>
+
+<!-- ═══ KARTEN-MODUS ═══ -->
+<div class="main" id="view-cards">
+  <div class="panel panel-left" id="cards-list-panel">
+    <div class="search-box"><input type="text" placeholder="Karten durchsuchen…" oninput="UI.searchQuery=this.value;renderCardsList()"></div>
+    <button class="btn btn-accent" style="width:100%;margin-bottom:12px" onclick="openNewCardModal()">+ Neue Karte</button>
+    <div id="cards-tree"></div>
+  </div>
+  <div class="panel panel-center" id="cards-detail">
+    <div class="empty" id="cards-empty"><div class="icon">✎</div>Wähle eine Karte oder erstelle eine neue.</div>
+    <div id="card-detail-content" style="display:none"></div>
+  </div>
+  <div class="panel panel-right" id="cards-actions">
+    <div id="card-actions-content"></div>
+  </div>
+</div>
+
+<!-- ═══ BRAINSTORM-MODUS ═══ -->
+<div class="main" id="view-brainstorm" style="display:none;flex-direction:column">
+  <div class="brainstorm-toolbar">
+    <button class="btn" onclick="shuffleBrainstorm()">⟳ Neu mischen</button>
+    <label style="font-size:0.8rem;color:var(--ink-light)">Spalten:
+      <select id="bs-cols" onchange="S.config.matrixCols=+this.value;renderBrainstorm()" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
+        <option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option>
+      </select>
+    </label>
+    <label style="font-size:0.8rem;color:var(--ink-light)">Zeilen:
+      <select id="bs-rows" onchange="S.config.matrixRows=+this.value;renderBrainstorm()" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
+        <option value="3">3</option><option value="4" selected>4</option><option value="5">5</option><option value="6">6</option>
+      </select>
+    </label>
+    <button class="btn btn-sm" onclick="clearBrainstormFocus()" id="bs-clear-focus" style="display:none">✕ Fokus lösen</button>
+    <span style="margin-left:auto;font-size:0.78rem;color:var(--ink-dim)" id="bs-info"></span>
+  </div>
+  <div style="display:flex;flex:1;min-height:0;overflow:hidden">
+    <div class="brainstorm-board" id="bs-board"></div>
+    <div class="panel panel-right" style="overflow-y:auto">
+      <div class="detail-label">Verbindungen</div>
+      <div id="bs-connections"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ KOMPOSITIONS-MODUS ═══ -->
+<div class="main" id="view-composition" style="display:none">
+  <div class="panel panel-left">
+    <button class="btn btn-accent" style="width:100%;margin-bottom:12px" onclick="openNewCompModal()">+ Neue Komposition</button>
+    <div id="comp-list"></div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+    <div class="detail-label">Karten hinzufügen</div>
+    <div class="search-box"><input type="text" placeholder="Karte suchen…" id="comp-card-search" oninput="renderCompCardPicker()"></div>
+    <div id="comp-card-picker"></div>
+  </div>
+  <div class="panel panel-center">
+    <div id="comp-detail"></div>
+  </div>
+  <div class="panel panel-right">
+    <div class="detail-label">Vorschau</div>
+    <div class="preview-box" id="comp-preview"></div>
+    <div class="btn-group" style="margin-top:12px">
+      <button class="btn" onclick="copyCompText()">📋 Kopieren</button>
+      <button class="btn" onclick="copyCompTextWithIds()">📋 Mit IDs</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL ═══ -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-body"></div>
+</div>
+
+<!-- ═══ TOAST ═══ -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════
+   RILKE — Gedichtezettelkasten
+   Single-File HTML App · v1.1
+   ═══════════════════════════════════════════ */
+
+// ─── Storage Keys ───
+var LKEY = 'poem_zettelkasten_v1';
+
+// ─── State ───
+var S = {
+  cards: [],
+  pairRelations: [],
+  compositions: [],
+  matrixSessions: [],
+  deletedIds: {},
+  config: {
+    appName: 'Rilke',
+    matrixCols: 5,
+    matrixRows: 4,
+    exportMode: 'plain'
+  },
+  _lastExported: ''
+};
+
+var UI = {
+  tab: 'cards',
+  selectedCardUid: '',
+  selectedRelationUid: '',
+  selectedCompositionUid: '',
+  searchQuery: '',
+  showArchived: false
+};
+
+// ─── Brainstorm state (not persisted) ───
+var brainstormOrder = [];
+var brainstormActiveUid = '';
+var brainstormJitters = {};
+
+// ─── Helpers ───
+function uid() { return Date.now().toString() + Math.random().toString(36).slice(2,8); }
+function now() { return new Date().toISOString(); }
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
+function $(id) { return document.getElementById(id); }
+
+// ─── Persistence ───
+function save() {
+  S._lastExported = now();
+  try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch(e) { console.error('Save failed', e); }
+}
+var _saveTimer = null;
+function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(save, 400); }
+
+function load() {
+  try {
+    var d = localStorage.getItem(LKEY);
+    if (d) { var p = JSON.parse(d); if (p && p.cards) S = p; }
+  } catch(e) { console.error('Load failed', e); }
+  if (!S.cards) S.cards = [];
+  if (!S.pairRelations) S.pairRelations = [];
+  if (!S.compositions) S.compositions = [];
+  if (!S.matrixSessions) S.matrixSessions = [];
+  if (!S.deletedIds) S.deletedIds = {};
+  if (!S.config) S.config = {};
+  if (!S.config.matrixCols) S.config.matrixCols = 5;
+  if (!S.config.matrixRows) S.config.matrixRows = 4;
+}
+
+// ─── Card helpers ───
+function findCard(u) { return S.cards.find(function(c){return c.uid===u}); }
+function rootCards() { return S.cards.filter(function(c){return !c.parentUid && c.status!=='archived'}).sort(function(a,b){return a.order-b.order}); }
+function childrenOf(parentUid) { return S.cards.filter(function(c){return c.parentUid===parentUid && c.status!=='archived'}).sort(function(a,b){return a.order-b.order}); }
+function allActiveCards() { return S.cards.filter(function(c){return c.status!=='archived'}); }
+
+function nextSid(parentUid) {
+  if (!parentUid) { return String(rootCards().length + 1); }
+  var parent = findCard(parentUid);
+  var children = childrenOf(parentUid);
+  var letter = String.fromCharCode(97 + children.length);
+  return (parent ? parent.sid : '') + letter;
+}
+
+function nextOrder(parentUid) {
+  var siblings = parentUid ? childrenOf(parentUid) : rootCards();
+  return siblings.length;
+}
+
+function createCard(text, comment, parentUid) {
+  var c = {
+    uid: uid(), sid: nextSid(parentUid), text: text || '', comment: comment || '',
+    parentUid: parentUid || null, childUids: [], order: nextOrder(parentUid),
+    links: [], tags: [], attachments: [], status: 'draft',
+    createdAt: now(), updatedAt: now()
+  };
+  S.cards.push(c);
+  if (parentUid) {
+    var p = findCard(parentUid);
+    if (p) { if (!p.childUids) p.childUids = []; p.childUids.push(c.uid); p.updatedAt = now(); }
+  }
+  saveDebounced();
+  return c;
+}
+
+function updateCard(cardUid, fields) {
+  var c = findCard(cardUid);
+  if (!c) return;
+  Object.keys(fields).forEach(function(k){ c[k] = fields[k]; });
+  c.updatedAt = now();
+  saveDebounced();
+}
+
+function deleteCard(cardUid) {
+  var c = findCard(cardUid);
+  if (!c) return;
+  c.status = 'archived'; c.updatedAt = now();
+  S.deletedIds[cardUid] = now();
+  (c.childUids||[]).forEach(function(cid){ deleteCard(cid); });
+  saveDebounced();
+}
+
+// ─── Split Logic ───
+function splitSentences(text) {
+  if (!text) return [];
+  return text.split(/(?<=[.!?;])\s+/).map(function(s){return s.trim()}).filter(function(s){return s.length > 0});
+}
+
+// ─── PairRelation helpers ───
+function createRelation(fromUid, toUid, posType, origin) {
+  var exists = S.pairRelations.find(function(r){
+    return r.fromCardUid===fromUid && r.toCardUid===toUid && r.origin===origin;
+  });
+  if (exists) return exists;
+  var r = {
+    uid: 'pair_' + uid(), fromCardUid: fromUid, toCardUid: toUid,
+    origin: origin || 'brainstorm', positionType: posType || '',
+    note: '', isInteresting: false, createdAt: now(), updatedAt: now()
+  };
+  S.pairRelations.push(r);
+  saveDebounced();
+  return r;
+}
+
+function relationsForCard(cardUid) {
+  return S.pairRelations.filter(function(r){ return r.fromCardUid===cardUid; });
+}
+
+// ─── Composition helpers ───
+function findComp(u) { return S.compositions.find(function(c){return c.uid===u}); }
+
+// ─── Tab switching ───
+function switchTab(tab) {
+  UI.tab = tab;
+  ['cards','brainstorm','composition'].forEach(function(t){
+    var el = $('view-'+t);
+    if (el) el.style.display = t===tab ? 'flex' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    var l = b.textContent.toLowerCase();
+    b.classList.toggle('active',
+      (tab==='cards' && l==='karten') ||
+      (tab==='brainstorm' && l==='brainstorm') ||
+      (tab==='composition' && l==='komposition')
+    );
+  });
+  if (tab === 'cards') renderCards();
+  if (tab === 'brainstorm') { if (brainstormOrder.length === 0) shuffleBrainstorm(); else renderBrainstorm(); }
+  if (tab === 'composition') renderComposition();
+}
+
+// ─── Toast ───
+function toast(msg) {
+  var t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(function(){ t.classList.remove('show'); }, 2000);
+}
+
+// ─── Modal ───
+function openModal(html) { $('modal-body').innerHTML = html; $('modal-overlay').classList.add('open'); }
+function closeModal() { $('modal-overlay').classList.remove('open'); }
+
+/* ═══════════════════════════════════════════
+   KARTEN-MODUS — Rendering
+   ═══════════════════════════════════════════ */
+
+function renderCards() { renderCardsList(); renderCardDetail(); renderCardActions(); }
+
+function renderCardsList() {
+  var container = $('cards-tree');
+  var q = (UI.searchQuery || '').toLowerCase();
+  var roots = rootCards();
+  if (q) {
+    var matches = allActiveCards().filter(function(c){
+      return (c.text||'').toLowerCase().includes(q) || (c.comment||'').toLowerCase().includes(q) || (c.sid||'').toLowerCase().includes(q);
+    });
+    container.innerHTML = matches.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">⌕</div>Keine Treffer</div>' : '';
+    matches.forEach(function(c){ container.innerHTML += cardItemHtml(c); });
+    return;
+  }
+  container.innerHTML = roots.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">✎</div>Noch keine Karten</div>' : '';
+  roots.forEach(function(c){ container.innerHTML += renderCardTree(c, 0); });
+}
+
+function renderCardTree(card, depth) {
+  var html = cardItemHtml(card);
+  var children = childrenOf(card.uid);
+  if (children.length > 0) {
+    html += '<div class="child-indent">';
+    children.forEach(function(ch){ html += renderCardTree(ch, depth+1); });
+    html += '</div>';
+  }
+  return html;
+}
+
+function cardItemHtml(c) {
+  var sel = c.uid === UI.selectedCardUid ? ' selected' : '';
+  return '<div class="card-item'+sel+'" onclick="selectCard(\''+c.uid+'\')">' +
+    '<span class="sid">'+esc(c.sid)+'</span>' +
+    '<span class="status-dot '+c.status+'"></span>' +
+    '<span class="text">'+esc(truncate(c.text, 60))+'</span>' +
+    (c.comment ? '<div class="comment">'+esc(truncate(c.comment, 40))+'</div>' : '') +
+    '</div>';
+}
+
+function selectCard(cardUid) { UI.selectedCardUid = cardUid; renderCards(); }
+
+function renderCardDetail() {
+  var c = findCard(UI.selectedCardUid);
+  if (!c) { $('cards-empty').style.display = ''; $('card-detail-content').style.display = 'none'; return; }
+  $('cards-empty').style.display = 'none';
+  var el = $('card-detail-content'); el.style.display = '';
+  el.innerHTML =
+    '<div class="detail-section"><div class="detail-label">ID: <span class="detail-meta">'+esc(c.sid)+' · '+esc(c.uid)+'</span></div></div>' +
+    '<div class="detail-section"><div class="detail-label">Text</div><div class="detail-text">'+esc(c.text)+'</div></div>' +
+    (c.comment ? '<div class="detail-section"><div class="detail-label">Kommentar</div><div class="detail-comment">'+esc(c.comment)+'</div></div>' : '') +
+    '<div class="detail-section"><div class="detail-label">Status</div><span class="status-dot '+c.status+'"></span> '+c.status+'</div>' +
+    (c.parentUid ? '<div class="detail-section"><div class="detail-label">Elternkarte</div><div class="card-item" onclick="selectCard(\''+c.parentUid+'\')"><span class="sid">'+esc((findCard(c.parentUid)||{}).sid||'')+'</span> <span class="text">'+esc(truncate((findCard(c.parentUid)||{}).text||'',40))+'</span></div></div>' : '') +
+    '<div class="detail-section"><div class="detail-label">Erstellt</div><div class="detail-meta">'+esc(c.createdAt)+'</div></div>';
+}
+
+function renderCardActions() {
+  var c = findCard(UI.selectedCardUid);
+  var el = $('card-actions-content');
+  if (!c) { el.innerHTML = ''; return; }
+  el.innerHTML =
+    '<div class="detail-label">Aktionen</div>' +
+    '<div class="btn-group" style="flex-direction:column">' +
+      '<button class="btn" onclick="openEditCardModal(\''+c.uid+'\')">✏ Bearbeiten</button>' +
+      '<button class="btn" onclick="openNewCardModal(\''+c.uid+'\',\'child\')">↳ Unterkarte</button>' +
+      '<button class="btn" onclick="openNewCardModal(\''+c.parentUid+'\',\'sibling\')">↔ Schwesterkarte</button>' +
+      '<button class="btn" onclick="openSplitModal(\''+c.uid+'\')">✂ Text splitten</button>' +
+      '<button class="btn btn-danger" onclick="confirmDeleteCard(\''+c.uid+'\')">✕ Archivieren</button>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
+    '<div class="detail-label">Kinder</div>' + renderChildrenList(c.uid) +
+    '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
+    '<div class="detail-label">Verbindungen</div>' + renderRelationsList(c.uid);
+}
+
+function renderChildrenList(parentUid) {
+  var children = childrenOf(parentUid);
+  if (children.length === 0) return '<div style="color:var(--ink-dim);font-size:0.82rem;padding:6px 0">Keine Unterkarten</div>';
+  return children.map(function(c){
+    return '<div class="card-item" style="margin-bottom:4px" onclick="selectCard(\''+c.uid+'\')"><span class="sid">'+esc(c.sid)+'</span> <span class="text">'+esc(truncate(c.text,40))+'</span></div>';
+  }).join('');
+}
+
+function renderRelationsList(cardUid) {
+  var rels = relationsForCard(cardUid);
+  if (rels.length === 0) return '<div style="color:var(--ink-dim);font-size:0.82rem;padding:6px 0">Keine Verbindungen</div>';
+  return rels.map(function(r){
+    var to = findCard(r.toCardUid);
+    return '<div class="relation-item'+(r.isInteresting?' interesting':'')+'">' +
+      '<div class="relation-pair"><span class="sid">→ '+(to?esc(to.sid):'?')+'</span> '+(to?esc(truncate(to.text,30)):'-')+'</div>' +
+      (r.note ? '<div class="relation-note">'+esc(r.note)+'</div>' : '') +
+      '<div style="font-size:0.72rem;color:var(--ink-dim);margin-top:4px">'+r.positionType+(r.isInteresting?' · ⭐':'')+'</div>' +
+    '</div>';
+  }).join('');
+}
+
+/* ═══ CARD MODALS ═══ */
+
+function openNewCardModal(parentUid, type) {
+  var parentLabel = '';
+  if (parentUid && type === 'child') { var p = findCard(parentUid); parentLabel = p ? ' (unter '+p.sid+')' : ''; }
+  if (type === 'sibling' && parentUid) { var pp = findCard(parentUid); parentLabel = pp ? ' (neben '+pp.sid+')' : ''; }
+  var effectiveParent = type === 'child' ? (parentUid || null) : (type === 'sibling' ? parentUid : null);
+  openModal(
+    '<h3>Neue Karte'+parentLabel+'</h3>' +
+    '<div class="field"><label>Text</label><textarea id="m-text" rows="4" placeholder="Poetisches Fragment…"></textarea></div>' +
+    '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2" placeholder="Notiz, Variante…"></textarea></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateCard(\''+effectiveParent+'\')">Erstellen</button></div>'
+  );
+  setTimeout(function(){ $('m-text').focus(); }, 100);
+}
+
+function doCreateCard(parentUid) {
+  var text = $('m-text').value.trim();
+  if (!text) { toast('Text darf nicht leer sein'); return; }
+  var comment = $('m-comment').value.trim();
+  var pUid = parentUid === 'null' || parentUid === '' ? null : parentUid;
+  var c = createCard(text, comment, pUid);
+  UI.selectedCardUid = c.uid; closeModal(); renderCards();
+  toast('Karte '+c.sid+' erstellt');
+}
+
+function openEditCardModal(cardUid) {
+  var c = findCard(cardUid); if (!c) return;
+  openModal(
+    '<h3>Karte bearbeiten <span style="font-family:var(--mono);font-size:0.8rem;color:var(--ink-dim)">'+esc(c.sid)+'</span></h3>' +
+    '<div class="field"><label>Text</label><textarea id="m-text" rows="4">'+esc(c.text)+'</textarea></div>' +
+    '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2">'+esc(c.comment)+'</textarea></div>' +
+    '<div class="field"><label>Status</label><select id="m-status"><option value="draft"'+(c.status==='draft'?' selected':'')+'>Entwurf</option><option value="active"'+(c.status==='active'?' selected':'')+'>Aktiv</option><option value="archived"'+(c.status==='archived'?' selected':'')+'>Archiviert</option></select></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doEditCard(\''+cardUid+'\')">Speichern</button></div>'
+  );
+}
+
+function doEditCard(cardUid) {
+  updateCard(cardUid, { text: $('m-text').value.trim(), comment: $('m-comment').value.trim(), status: $('m-status').value });
+  closeModal(); renderCards(); toast('Karte gespeichert');
+}
+
+function confirmDeleteCard(cardUid) {
+  var c = findCard(cardUid); if (!c) return;
+  var childCount = childrenOf(cardUid).length;
+  openModal(
+    '<h3>Karte archivieren?</h3><p style="margin-bottom:12px">Karte <strong>'+esc(c.sid)+'</strong>: „'+esc(truncate(c.text,50))+'"</p>' +
+    (childCount > 0 ? '<p style="color:var(--red);margin-bottom:12px">'+childCount+' Unterkarte(n) werden ebenfalls archiviert.</p>' : '') +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-danger" onclick="doDeleteCard(\''+cardUid+'\')">Archivieren</button></div>'
+  );
+}
+
+function doDeleteCard(cardUid) {
+  deleteCard(cardUid); UI.selectedCardUid = ''; closeModal(); renderCards(); toast('Karte archiviert');
+}
+
+/* ═══ SPLIT MODAL ═══ */
+
+function openSplitModal(cardUid) {
+  var c = findCard(cardUid); if (!c) return;
+  var sentences = splitSentences(c.text);
+  if (sentences.length <= 1) { toast('Text enthält nur einen Satz'); return; }
+  var previewHtml = sentences.map(function(s,i){
+    return '<div class="split-preview-item"><span class="num">'+(i+1)+'</span>'+esc(s)+'</div>';
+  }).join('');
+  openModal(
+    '<h3>Text splitten <span style="font-family:var(--mono);font-size:0.8rem;color:var(--ink-dim)">'+esc(c.sid)+'</span></h3>' +
+    '<p style="margin-bottom:12px;font-size:0.88rem;color:var(--ink-light)">'+sentences.length+' Sätze erkannt:</p>' +
+    previewHtml +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doSplitCard(\''+cardUid+'\')">Splitten</button></div>'
+  );
+}
+
+function doSplitCard(cardUid) {
+  var c = findCard(cardUid); if (!c) return;
+  var sentences = splitSentences(c.text);
+  sentences.forEach(function(s) { createCard(s, '', cardUid); });
+  closeModal(); renderCards(); toast(sentences.length + ' Unterkarten erstellt');
+}
+
+/* ═══════════════════════════════════════════
+   BRAINSTORM-MODUS
+   ═══════════════════════════════════════════ */
+
+function generateJitter() {
+  return {
+    dx: Math.round((Math.random() - 0.5) * 22),
+    dy: Math.round((Math.random() - 0.5) * 18),
+    rot: +((Math.random() - 0.5) * 3.2).toFixed(1)
+  };
+}
+
+function shuffleBrainstorm() {
+  var cards = allActiveCards();
+  var arr = cards.map(function(c){return c.uid});
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i+1));
+    var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  brainstormOrder = arr;
+  brainstormActiveUid = '';
+  brainstormJitters = {};
+  arr.forEach(function(u) { brainstormJitters[u] = generateJitter(); });
+  renderBrainstorm();
+}
+
+function renderBrainstorm() {
+  var cols = S.config.matrixCols || 5;
+  var rows = S.config.matrixRows || 4;
+  var total = cols * rows;
+  var order = brainstormOrder.slice(0, total);
+
+  $('bs-info').textContent = order.length + ' von ' + allActiveCards().length + ' Karten ausgelegt';
+  $('bs-clear-focus').style.display = brainstormActiveUid ? '' : 'none';
+
+  var colSel = $('bs-cols'); var rowSel = $('bs-rows');
+  if (colSel) colSel.value = cols;
+  if (rowSel) rowSel.value = rows;
+
+  var board = $('bs-board');
+  var boardW = board.clientWidth || 800;
+  var boardH = board.clientHeight || 500;
+
+  var cardW = 152; var cardH = 84;
+  var padX = 24; var padY = 20;
+
+  var slotW = Math.max(cardW + 14, Math.floor((boardW - padX * 2) / cols));
+  var slotH = Math.max(cardH + 12, Math.floor((boardH - padY * 2) / rows));
+
+  var neighborIndices = [];
+  if (brainstormActiveUid) {
+    var activeIdx = order.indexOf(brainstormActiveUid);
+    if (activeIdx >= 0) neighborIndices = getTorusNeighbors(activeIdx, cols, rows);
+  }
+
+  var neededW = padX * 2 + cols * slotW;
+  var neededH = padY * 2 + rows * slotH;
+
+  var html = '';
+  order.forEach(function(cardUid, idx) {
+    var c = findCard(cardUid); if (!c) return;
+    var row = Math.floor(idx / cols);
+    var col = idx % cols;
+    var baseX = padX + col * slotW + (slotW - cardW) / 2;
+    var baseY = padY + row * slotH + (slotH - cardH) / 2;
+    var jit = brainstormJitters[cardUid] || {dx:0,dy:0,rot:0};
+    var x = baseX + jit.dx;
+    var y = baseY + jit.dy;
+    var rot = jit.rot;
+    var isActive = cardUid === brainstormActiveUid;
+    var isNeighbor = neighborIndices.indexOf(idx) >= 0;
+    var cls = 'brainstorm-card';
+    if (isActive) cls += ' active';
+    else if (isNeighbor) cls += ' neighbor';
+
+    html += '<div class="'+cls+'" style="left:'+x+'px;top:'+y+'px;transform:rotate('+rot+'deg)" onclick="brainstormSelectCard(\''+cardUid+'\')">' +
+      '<span class="sid">'+esc(c.sid)+'</span>' +
+      '<span class="text">'+esc(truncate(c.text,48))+'</span>' +
+    '</div>';
+  });
+
+  board.innerHTML = html;
+  board.style.minWidth = neededW + 'px';
+  board.style.minHeight = neededH + 'px';
+
+  renderBrainstormConnections();
+}
+
+function getTorusNeighbors(idx, cols, rows) {
+  var row = Math.floor(idx / cols);
+  var col = idx % cols;
+  return [
+    ((row - 1 + rows) % rows) * cols + col,     // oben
+    row * cols + ((col + 1) % cols),             // rechts
+    ((row + 1) % rows) * cols + col,             // unten
+    row * cols + ((col - 1 + cols) % cols)       // links
+  ];
+}
+
+function brainstormSelectCard(cardUid) {
+  brainstormActiveUid = cardUid;
+  var cols = S.config.matrixCols || 5;
+  var rows = S.config.matrixRows || 4;
+  var order = brainstormOrder.slice(0, cols * rows);
+  var idx = order.indexOf(cardUid);
+  if (idx < 0) return;
+
+  var neighborIndices = getTorusNeighbors(idx, cols, rows);
+  var labels = ['oben', 'rechts', 'unten', 'links'];
+  neighborIndices.forEach(function(ni, i) {
+    if (ni < order.length) createRelation(cardUid, order[ni], labels[i], 'brainstorm');
+  });
+
+  renderBrainstorm();
+}
+
+function clearBrainstormFocus() { brainstormActiveUid = ''; renderBrainstorm(); }
+
+function renderBrainstormConnections() {
+  var el = $('bs-connections');
+  if (!brainstormActiveUid) {
+    el.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">◇</div>Wähle eine Karte auf dem Board,<br>um Nachbarschaften zu entdecken.</div>';
+    return;
+  }
+  var c = findCard(brainstormActiveUid);
+  var rels = relationsForCard(brainstormActiveUid);
+
+  var html = '<div class="focus-card-box">' +
+    '<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-dim);margin-bottom:4px;font-weight:500">Fokus</div>' +
+    '<span class="sid">'+esc((c||{}).sid||'')+'</span>' +
+    '<div class="text">'+esc((c||{}).text||'')+'</div>' +
+  '</div>';
+
+  if (rels.length === 0) {
+    html += '<div style="color:var(--ink-dim);font-size:0.85rem;padding:8px 0">Noch keine Verbindungen.</div>';
+  } else {
+    var dirLabels = {oben:'↑ oben',rechts:'→ rechts',unten:'↓ unten',links:'← links'};
+    html += rels.map(function(r) {
+      var to = findCard(r.toCardUid);
+      var dirLabel = dirLabels[r.positionType] || r.positionType;
+      return '<div class="connection-item'+(r.isInteresting?' interesting':'')+'">' +
+        '<div class="connection-header">' +
+          '<span class="connection-direction">'+dirLabel+'</span>' +
+          '<span style="font-family:var(--mono);font-size:0.7rem;color:var(--ink-dim)">'+(to?esc(to.sid):'?')+'</span>' +
+        '</div>' +
+        '<div class="connection-text">'+(to?esc(to.text):'-')+'</div>' +
+        (r.note ? '<div class="connection-note">'+esc(r.note)+'</div>' : '') +
+        '<div class="btn-group" style="margin-top:8px">' +
+          '<button class="btn btn-sm'+(r.isInteresting?' btn-accent':'')+'" onclick="toggleInteresting(\''+r.uid+'\')">'+(r.isInteresting?'⭐ interessant':'☆ merken')+'</button>' +
+          '<button class="btn btn-sm" onclick="openRelationNoteModal(\''+r.uid+'\')">✎ Notiz</button>' +
+          '<button class="btn btn-sm btn-accent" onclick="openNewCardFromRelation(\''+r.uid+'\')">✨ Idee</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  el.innerHTML = html;
+}
+
+function toggleInteresting(relUid) {
+  var r = S.pairRelations.find(function(x){return x.uid===relUid});
+  if (!r) return;
+  r.isInteresting = !r.isInteresting; r.updatedAt = now();
+  saveDebounced(); renderBrainstormConnections();
+}
+
+function openRelationNoteModal(relUid) {
+  var r = S.pairRelations.find(function(x){return x.uid===relUid}); if (!r) return;
+  var from = findCard(r.fromCardUid); var to = findCard(r.toCardUid);
+  openModal(
+    '<h3>Notiz zur Verbindung</h3>' +
+    '<p style="font-size:0.85rem;color:var(--ink-light);margin-bottom:6px"><span style="font-family:var(--mono);font-size:0.78rem">'+(from?esc(from.sid):'?')+'</span> '+esc(truncate((from||{}).text||'',30))+'</p>' +
+    '<p style="font-size:0.85rem;color:var(--ink-light);margin-bottom:12px"><span style="font-family:var(--mono);font-size:0.78rem">'+(to?esc(to.sid):'?')+'</span> '+esc(truncate((to||{}).text||'',30))+'</p>' +
+    '<div class="field"><label>Was fällt dir auf?</label><textarea id="m-note" rows="3" placeholder="Kontrast, Klang, Bild, Motiv…">'+esc(r.note)+'</textarea></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doSaveRelNote(\''+relUid+'\')">Speichern</button></div>'
+  );
+}
+
+function doSaveRelNote(relUid) {
+  var r = S.pairRelations.find(function(x){return x.uid===relUid}); if (!r) return;
+  r.note = $('m-note').value.trim(); r.updatedAt = now();
+  saveDebounced(); closeModal(); renderBrainstormConnections(); toast('Notiz gespeichert');
+}
+
+function openNewCardFromRelation(relUid) {
+  var r = S.pairRelations.find(function(x){return x.uid===relUid}); if (!r) return;
+  var from = findCard(r.fromCardUid); var to = findCard(r.toCardUid);
+  var prefilledComment = 'Entstanden aus '+(from?from.sid:'?')+' \u00d7 '+(to?to.sid:'?');
+  if (r.note) prefilledComment += ' \u2014 '+r.note;
+  openModal(
+    '<h3>\u2728 Neue Idee aus Verbindung</h3>' +
+    '<div style="background:var(--bg-2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:14px;font-size:0.85rem;line-height:1.5">' +
+      '<div style="color:var(--ink-dim);font-size:0.75rem;margin-bottom:4px">Ausgangskarten</div>' +
+      '<div><span style="font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim)">'+(from?esc(from.sid):'?')+'</span> '+esc(truncate((from||{}).text||'',40))+'</div>' +
+      '<div style="margin-top:4px"><span style="font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim)">'+(to?esc(to.sid):'?')+'</span> '+esc(truncate((to||{}).text||'',40))+'</div>' +
+      (r.note ? '<div style="margin-top:6px;font-style:italic;color:var(--ink-light)">'+esc(r.note)+'</div>' : '') +
+    '</div>' +
+    '<div class="field"><label>Neue Idee / neuer Text</label><textarea id="m-text" rows="3" placeholder="Was entsteht aus dieser Begegnung?"></textarea></div>' +
+    '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2">'+esc(prefilledComment)+'</textarea></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateCardFromRel()">\u2728 Idee erstellen</button></div>'
+  );
+  setTimeout(function(){ $('m-text').focus(); }, 100);
+}
+
+function doCreateCardFromRel() {
+  var text = $('m-text').value.trim();
+  if (!text) { toast('Text darf nicht leer sein'); return; }
+  var comment = $('m-comment').value.trim();
+  var c = createCard(text, comment, null);
+  closeModal(); toast('Idee \u201e'+c.sid+'\u201c erstellt');
+  if (UI.tab === 'cards') { UI.selectedCardUid = c.uid; renderCards(); }
+}
+
+/* ═══════════════════════════════════════════
+   KOMPOSITIONS-MODUS
+   ═══════════════════════════════════════════ */
+
+function renderComposition() { renderCompList(); renderCompDetail(); renderCompPreview(); renderCompCardPicker(); }
+
+function renderCompList() {
+  var el = $('comp-list');
+  if (S.compositions.length === 0) { el.innerHTML = '<div class="empty" style="padding:20px"><div class="icon">\ud83d\udcdc</div>Keine Kompositionen</div>'; return; }
+  el.innerHTML = S.compositions.map(function(c){
+    var sel = c.uid === UI.selectedCompositionUid ? ' selected' : '';
+    return '<div class="comp-item'+sel+'" onclick="selectComp(\''+c.uid+'\')"><div style="font-size:0.9rem;font-weight:500">'+esc(c.title)+'</div><div style="font-size:0.78rem;color:var(--ink-dim);margin-top:3px">'+c.cardUids.length+' Karten</div></div>';
+  }).join('');
+}
+
+function selectComp(compUid) { UI.selectedCompositionUid = compUid; renderComposition(); }
+
+function openNewCompModal() {
+  openModal(
+    '<h3>Neue Komposition</h3>' +
+    '<div class="field"><label>Titel</label><input id="m-title" placeholder="Gedichtentwurf\u2026"></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateComp()">Erstellen</button></div>'
+  );
+  setTimeout(function(){ $('m-title').focus(); }, 100);
+}
+
+function doCreateComp() {
+  var title = $('m-title').value.trim();
+  if (!title) { toast('Titel fehlt'); return; }
+  var c = { uid: 'comp_'+uid(), title: title, cardUids: [], createdAt: now(), updatedAt: now() };
+  S.compositions.push(c); UI.selectedCompositionUid = c.uid;
+  saveDebounced(); closeModal(); renderComposition(); toast('Komposition erstellt');
+}
+
+function renderCompDetail() {
+  var el = $('comp-detail');
+  var comp = findComp(UI.selectedCompositionUid);
+  if (!comp) { el.innerHTML = '<div class="empty"><div class="icon">\ud83d\udcdc</div>W\u00e4hle oder erstelle eine Komposition</div>'; return; }
+  var cardsHtml = comp.cardUids.map(function(cuid, idx){
+    var c = findCard(cuid); if (!c) return '';
+    return '<div class="comp-card" data-idx="'+idx+'">' +
+      '<span class="handle" title="Ziehen zum Sortieren">\u2807</span>' +
+      '<span class="sid">'+esc(c.sid)+'</span>' +
+      '<span class="text">'+esc(c.text)+'</span>' +
+      '<button class="btn btn-sm" onclick="moveCompCard(\''+comp.uid+'\','+idx+',-1)" title="Hoch"'+(idx===0?' disabled':'')+'>\u2191</button>' +
+      '<button class="btn btn-sm" onclick="moveCompCard(\''+comp.uid+'\','+idx+',1)" title="Runter"'+(idx===comp.cardUids.length-1?' disabled':'')+'>\u2193</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="removeCompCard(\''+comp.uid+'\','+idx+')" title="Entfernen">\u2715</button>' +
+    '</div>';
+  }).join('');
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
+      '<div style="font-size:1.05rem;font-weight:600">'+esc(comp.title)+'</div>' +
+      '<button class="btn btn-sm" onclick="openEditCompModal(\''+comp.uid+'\')">\u270f</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="confirmDeleteComp(\''+comp.uid+'\')">\u2715</button>' +
+    '</div>' +
+    (cardsHtml || '<div style="color:var(--ink-dim);font-size:0.85rem;padding:20px 0">Noch keine Karten \u2014 f\u00fcge Karten \u00fcber die linke Spalte hinzu.</div>');
+}
+
+function moveCompCard(compUid, idx, dir) {
+  var comp = findComp(compUid); if (!comp) return;
+  var newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= comp.cardUids.length) return;
+  var tmp = comp.cardUids[idx]; comp.cardUids[idx] = comp.cardUids[newIdx]; comp.cardUids[newIdx] = tmp;
+  comp.updatedAt = now(); saveDebounced(); renderCompDetail(); renderCompPreview();
+}
+
+function removeCompCard(compUid, idx) {
+  var comp = findComp(compUid); if (!comp) return;
+  comp.cardUids.splice(idx, 1); comp.updatedAt = now();
+  saveDebounced(); renderCompDetail(); renderCompPreview();
+}
+
+function addCardToComp(cardUid) {
+  var comp = findComp(UI.selectedCompositionUid);
+  if (!comp) { toast('Erst eine Komposition ausw\u00e4hlen'); return; }
+  if (comp.cardUids.indexOf(cardUid) >= 0) { toast('Karte bereits enthalten'); return; }
+  comp.cardUids.push(cardUid); comp.updatedAt = now();
+  saveDebounced(); renderCompDetail(); renderCompPreview(); toast('Karte hinzugef\u00fcgt');
+}
+
+function renderCompCardPicker() {
+  var el = $('comp-card-picker');
+  var q = ($('comp-card-search') || {}).value || ''; q = q.toLowerCase();
+  var cards = allActiveCards();
+  if (q) { cards = cards.filter(function(c){ return (c.text||'').toLowerCase().includes(q) || (c.sid||'').toLowerCase().includes(q); }); }
+  el.innerHTML = cards.slice(0, 30).map(function(c){
+    return '<div class="card-item" style="margin-bottom:4px;cursor:pointer" onclick="addCardToComp(\''+c.uid+'\')"><span class="sid">'+esc(c.sid)+'</span> <span class="text">'+esc(truncate(c.text,40))+'</span></div>';
+  }).join('');
+}
+
+function renderCompPreview() {
+  var el = $('comp-preview');
+  var comp = findComp(UI.selectedCompositionUid);
+  if (!comp || comp.cardUids.length === 0) { el.textContent = ''; return; }
+  el.textContent = comp.cardUids.map(function(cuid){ var c = findCard(cuid); return c ? c.text : ''; }).filter(function(t){return t}).join('\n');
+}
+
+function copyCompText() {
+  var comp = findComp(UI.selectedCompositionUid); if (!comp) return;
+  var lines = comp.cardUids.map(function(cuid){ var c = findCard(cuid); return c ? c.text : ''; }).filter(function(t){return t});
+  copyToClipboard(lines.join('\n')); toast('Text kopiert');
+}
+
+function copyCompTextWithIds() {
+  var comp = findComp(UI.selectedCompositionUid); if (!comp) return;
+  var lines = comp.cardUids.map(function(cuid){ var c = findCard(cuid); return c ? '['+c.sid+'] '+c.text : ''; }).filter(function(t){return t});
+  copyToClipboard(lines.join('\n')); toast('Text mit IDs kopiert');
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).catch(function(){ fallbackCopy(text); }); }
+  else { fallbackCopy(text); }
+}
+function fallbackCopy(text) {
+  var ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-999px';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } catch(e) {} document.body.removeChild(ta);
+}
+
+function openEditCompModal(compUid) {
+  var comp = findComp(compUid); if (!comp) return;
+  openModal('<h3>Komposition bearbeiten</h3><div class="field"><label>Titel</label><input id="m-title" value="'+esc(comp.title)+'"></div><div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doEditComp(\''+compUid+'\')">Speichern</button></div>');
+}
+
+function doEditComp(compUid) {
+  var comp = findComp(compUid); if (!comp) return;
+  comp.title = $('m-title').value.trim() || comp.title; comp.updatedAt = now();
+  saveDebounced(); closeModal(); renderComposition(); toast('Komposition gespeichert');
+}
+
+function confirmDeleteComp(compUid) {
+  var comp = findComp(compUid); if (!comp) return;
+  openModal('<h3>Komposition l\u00f6schen?</h3><p style="margin-bottom:12px">\u201e'+esc(comp.title)+'\u201c wird unwiderruflich gel\u00f6scht. Karten bleiben erhalten.</p><div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-danger" onclick="doDeleteComp(\''+compUid+'\')">L\u00f6schen</button></div>');
+}
+
+function doDeleteComp(compUid) {
+  S.compositions = S.compositions.filter(function(c){return c.uid!==compUid});
+  if (UI.selectedCompositionUid === compUid) UI.selectedCompositionUid = '';
+  saveDebounced(); closeModal(); renderComposition(); toast('Komposition gel\u00f6scht');
+}
+
+/* ═══════════════════════════════════════════
+   INIT
+   ═══════════════════════════════════════════ */
+
+function init() { load(); switchTab('cards'); }
+
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+init();
+</script>
+</body>
+</html>
