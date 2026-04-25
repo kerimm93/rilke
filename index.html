@@ -162,6 +162,7 @@ a{color:var(--accent);text-decoration:none}
 
 <header class="app-header">
   <div class="app-title">Rilke <span>Gedichtezettelkasten</span></div>
+  <button class="btn" onclick="exportCardsAsMarkdown()">📄 Export Markdown</button>
   <nav class="tab-bar">
     <button class="tab-btn active" onclick="switchTab('cards')">Karten</button>
     <button class="tab-btn" onclick="switchTab('brainstorm')">Brainstorm</button>
@@ -1099,6 +1100,110 @@ function fallbackCopy(text) {
   var ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-999px';
   document.body.appendChild(ta); ta.select();
   try { document.execCommand('copy'); } catch(e) {} document.body.removeChild(ta);
+}
+
+/* ═══════════════════════════════════════════
+   MARKDOWN EXPORT (OBSIDIAN)
+   ═══════════════════════════════════════════ */
+
+function toObsidianMarkdown(card) {
+  var tags = Array.isArray(card.tags) ? card.tags : [];
+  var frontmatter = [
+    '---',
+    'uid: ' + (card.uid || ''),
+    'sid: ' + (card.sid || ''),
+    'status: ' + (card.status || ''),
+    'tags: ' + JSON.stringify(tags),
+    'createdAt: ' + (card.createdAt || ''),
+    'updatedAt: ' + (card.updatedAt || ''),
+    '---',
+    '',
+    card.text || ''
+  ];
+  if (card.comment) {
+    frontmatter.push('', '## Kommentar', card.comment);
+  }
+  return frontmatter.join('\n');
+}
+
+function safeMarkdownFilename(card) {
+  var raw = (card && card.sid ? String(card.sid) : 'card_' + (card && card.uid ? card.uid : uid())) + '.md';
+  return raw.replace(/[\\/:*?"<>|]/g, '_');
+}
+
+function downloadBlob(filename, blob) {
+  var link = document.createElement('a');
+  var objectUrl = URL.createObjectURL(blob);
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(function(){ URL.revokeObjectURL(objectUrl); }, 1000);
+}
+
+function exportCardsAsSingleText(files) {
+  var combined = files.map(function(file) {
+    return '===== ' + file.filename + ' =====\n' + file.content;
+  }).join('\n\n');
+  downloadBlob('rilke-cards-export.md.txt', new Blob([combined], { type: 'text/plain;charset=utf-8' }));
+  toast(files.length + ' Karten exportiert (Fallback: Einzeldatei)');
+}
+
+function copyMarkdownExport(files) {
+  var combined = files.map(function(file) {
+    return '===== ' + file.filename + ' =====\n' + file.content;
+  }).join('\n\n');
+  copyToClipboard(combined);
+  toast(files.length + ' Karten als Markdown in Zwischenablage kopiert');
+}
+
+function ensureJsZipLoaded() {
+  return new Promise(function(resolve, reject) {
+    if (window.JSZip) { resolve(window.JSZip); return; }
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    script.onload = function() { resolve(window.JSZip); };
+    script.onerror = function() { reject(new Error('JSZip CDN konnte nicht geladen werden')); };
+    document.head.appendChild(script);
+  });
+}
+
+function exportCardsAsMarkdown() {
+  var cards = allActiveCards();
+  if (cards.length === 0) {
+    toast('Keine aktiven Karten zum Export');
+    console.log('[Markdown Export] 0 Karten exportiert');
+    return;
+  }
+
+  var files = cards.map(function(card) {
+    var filename = safeMarkdownFilename(card);
+    var content = toObsidianMarkdown(card);
+    console.log('--- FILE: ' + filename + ' ---\n' + content);
+    return { filename: filename, content: content };
+  });
+
+  ensureJsZipLoaded().then(function(JSZipLib) {
+    var zip = new JSZipLib();
+    files.forEach(function(file) { zip.file(file.filename, file.content); });
+    return zip.generateAsync({ type: 'blob' });
+  }).then(function(blob) {
+    if (blob.size > 8 * 1024 * 1024) {
+      exportCardsAsSingleText(files);
+      return;
+    }
+    downloadBlob('rilke-cards-markdown.zip', blob);
+    toast(files.length + ' Karten als Markdown exportiert');
+  }).catch(function(err) {
+    console.warn('[Markdown Export] ZIP fehlgeschlagen, nutze Fallback:', err);
+    try {
+      exportCardsAsSingleText(files);
+    } catch (downloadErr) {
+      console.warn('[Markdown Export] Download-Fallback fehlgeschlagen, kopiere stattdessen:', downloadErr);
+      copyMarkdownExport(files);
+    }
+  });
 }
 
 function openEditCompModal(compUid) {
