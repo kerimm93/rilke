@@ -622,6 +622,11 @@ function openSettingsModal() {
         '</div>' +
       '</div>' +
     '</div>' +
+    '<div class="field">' +
+      '<div class="detail-label">Sicherung</div>' +
+      '<button class="btn" onclick="exportZipBackup()">⬇ ZIP-Backup exportieren</button>' +
+      '<div class="detail-meta" style="margin-top:6px">Exportiert vollständigen State plus einzelne Markdown-Zettel. Enthält keine Tokens oder Zugangsdaten.</div>' +
+    '</div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Schließen</button></div>'
   );
 }
@@ -1237,6 +1242,201 @@ function exportCardsAsMarkdown() {
       console.warn('[Markdown Export] Download-Fallback fehlgeschlagen, kopiere stattdessen:', downloadErr);
       copyMarkdownExport(files);
     }
+  });
+}
+
+/* ═══════════════════════════════════════════
+   ZIP BACKUP EXPORT
+   ═══════════════════════════════════════════ */
+
+function todayFilenamePart() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function safeBackupFilename(value, fallback) {
+  var raw = value === null || value === undefined ? '' : String(value);
+  raw = raw.trim() || fallback || 'rilke';
+  raw = raw.replace(/[\\/:*?"<>|]/g, '_').replace(/[\u0000-\u001f]/g, '_');
+  raw = raw.replace(/\s+/g, '_').replace(/^\.+/, '').slice(0, 120);
+  return raw || fallback || 'rilke';
+}
+
+function getAllCardsForBackup() {
+  return Array.isArray(S.cards) ? S.cards : [];
+}
+
+function isCredentialKey(key) {
+  return /token|passphrase|password|api[_-]?key|secret|credential|gist/i.test(String(key || ''));
+}
+
+function sanitizeBackupValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(function(item) { return sanitizeBackupValue(item); });
+  }
+  if (value && typeof value === 'object') {
+    var out = {};
+    Object.keys(value).forEach(function(key) {
+      if (!isCredentialKey(key)) out[key] = sanitizeBackupValue(value[key]);
+    });
+    return out;
+  }
+  return value;
+}
+
+function buildBackupSnapshot() {
+  return sanitizeBackupValue({
+    cards: Array.isArray(S.cards) ? S.cards : [],
+    pairRelations: Array.isArray(S.pairRelations) ? S.pairRelations : [],
+    compositions: Array.isArray(S.compositions) ? S.compositions : [],
+    matrixSessions: Array.isArray(S.matrixSessions) ? S.matrixSessions : [],
+    deletedIds: S.deletedIds || {},
+    config: S.config || {},
+    _lastExported: S._lastExported || ''
+  });
+}
+
+function buildCardByUid(cards) {
+  var map = {};
+  (Array.isArray(cards) ? cards : []).forEach(function(card) {
+    if (card && card.uid) map[card.uid] = card;
+  });
+  return map;
+}
+
+function toBackupCardMarkdown(card) {
+  card = card || {};
+  var tags = Array.isArray(card.tags) ? card.tags : [];
+  var lines = [
+    '---',
+    'uid: ' + JSON.stringify(card.uid || ''),
+    'sid: ' + JSON.stringify(card.sid || ''),
+    'status: ' + JSON.stringify(card.status || ''),
+    'tags: ' + JSON.stringify(tags),
+    'createdAt: ' + JSON.stringify(card.createdAt || ''),
+    'updatedAt: ' + JSON.stringify(card.updatedAt || ''),
+    'parentUid: ' + JSON.stringify(card.parentUid || ''),
+    '---',
+    '',
+    card.text || ''
+  ];
+  if (card.comment) {
+    lines.push('', '## Kommentar', '', card.comment);
+  }
+  return lines.join('\n');
+}
+
+function toBackupCompositionMarkdown(comp, cardByUid) {
+  comp = comp || {};
+  cardByUid = cardByUid || {};
+  var cardUids = Array.isArray(comp.cardUids) ? comp.cardUids : [];
+  var lines = [
+    '---',
+    'uid: ' + JSON.stringify(comp.uid || ''),
+    'title: ' + JSON.stringify(comp.title || ''),
+    'createdAt: ' + JSON.stringify(comp.createdAt || ''),
+    'updatedAt: ' + JSON.stringify(comp.updatedAt || ''),
+    'cardUids: ' + JSON.stringify(cardUids),
+    '---',
+    ''
+  ];
+  cardUids.forEach(function(cardUid) {
+    var card = cardByUid[cardUid];
+    if (card) lines.push(card.text || '');
+  });
+  return lines.join('\n\n');
+}
+
+function buildBackupManifest(exportedIso, snapshot) {
+  snapshot = snapshot || {};
+  var cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
+  var pairRelations = Array.isArray(snapshot.pairRelations) ? snapshot.pairRelations : [];
+  var compositions = Array.isArray(snapshot.compositions) ? snapshot.compositions : [];
+  var deletedIds = snapshot.deletedIds || {};
+  return {
+    app: 'rilke',
+    backupVersion: '1',
+    exported: exportedIso,
+    counts: {
+      cards: cards.length,
+      activeCards: cards.filter(function(card) { return card && card.status !== 'archived'; }).length,
+      archivedCards: cards.filter(function(card) { return card && card.status === 'archived'; }).length,
+      pairRelations: pairRelations.length,
+      compositions: compositions.length,
+      deletedIds: Object.keys(deletedIds).length
+    }
+  };
+}
+
+function buildBackupReadme(manifest) {
+  return [
+    '# Rilke ZIP-Backup',
+    '',
+    'Dies ist ein vollständiges Rilke ZIP-Backup.',
+    '',
+    'Es enthält technischen State als JSON und einzelne Karten als Markdown-Zettel.',
+    'Es enthält keinen Importmechanismus.',
+    'Es enthält keine Tokens, Passphrases oder Zugangsdaten.',
+    'Recovery ist aktuell manuell/technisch möglich über die JSON-Dateien.',
+    'Archivierte Karten sind absichtlich enthalten, weil Recovery vollständig sein muss.',
+    '',
+    'Exportiert: ' + manifest.exported,
+    'Backup-Version: ' + manifest.backupVersion
+  ].join('\n');
+}
+
+function exportZipBackup() {
+  var exportedIso = now();
+  var snapshot = buildBackupSnapshot();
+  var manifest = buildBackupManifest(exportedIso, snapshot);
+  var cardByUid = buildCardByUid(snapshot.cards);
+  var config = snapshot.config || {};
+
+  ensureJsZipLoaded().then(function(JSZipLib) {
+    var zip = new JSZipLib();
+    var usedCardNames = {};
+    var usedCompNames = {};
+
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+    zip.file('README_BACKUP.md', buildBackupReadme(manifest));
+    zip.file('state/S.json', JSON.stringify(snapshot, null, 2));
+    zip.file('state/cards.json', JSON.stringify(snapshot.cards, null, 2));
+    zip.file('state/pairRelations.json', JSON.stringify(snapshot.pairRelations, null, 2));
+    zip.file('state/compositions.json', JSON.stringify(snapshot.compositions, null, 2));
+    zip.file('state/deletedIds.json', JSON.stringify(snapshot.deletedIds, null, 2));
+    zip.file('state/config.json', JSON.stringify(config, null, 2));
+    zip.file('relations/pairRelations.json', JSON.stringify(snapshot.pairRelations, null, 2));
+
+    (snapshot.cards || []).forEach(function(card, index) {
+      var base = safeBackupFilename(card && card.sid ? card.sid : (card && card.uid ? card.uid : 'card_' + (index + 1)), 'card_' + (index + 1));
+      var filename = base + '.md';
+      var counter = 2;
+      while (usedCardNames[filename]) {
+        filename = base + '_' + counter + '.md';
+        counter++;
+      }
+      usedCardNames[filename] = true;
+      zip.file('markdown/cards/' + filename, toBackupCardMarkdown(card));
+    });
+
+    (snapshot.compositions || []).forEach(function(comp, index) {
+      var base = safeBackupFilename(comp && comp.title ? comp.title : (comp && comp.uid ? comp.uid : 'composition_' + (index + 1)), 'composition_' + (index + 1));
+      var filename = base + '.md';
+      var counter = 2;
+      while (usedCompNames[filename]) {
+        filename = base + '_' + counter + '.md';
+        counter++;
+      }
+      usedCompNames[filename] = true;
+      zip.file('markdown/compositions/' + filename, toBackupCompositionMarkdown(comp, cardByUid));
+    });
+
+    return zip.generateAsync({ type: 'blob' });
+  }).then(function(blob) {
+    downloadBlob('rilke-backup-' + todayFilenamePart() + '.zip', blob);
+    toast('ZIP-Backup exportiert');
+  }).catch(function(err) {
+    console.warn('[ZIP Backup] Export fehlgeschlagen:', err);
+    toast('ZIP-Backup fehlgeschlagen');
   });
 }
 
