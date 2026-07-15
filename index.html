@@ -23,6 +23,7 @@
 }
 html{font-size:15px}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
+body.app-loading{pointer-events:none;cursor:progress}
 input,textarea,select,button{font-family:inherit;font-size:inherit;color:inherit}
 button{cursor:pointer}
 a{color:var(--accent);text-decoration:none}
@@ -259,23 +260,31 @@ a{color:var(--accent);text-decoration:none}
 
 // ─── Storage Keys ───
 var LKEY = 'poem_zettelkasten_v1';
+var DB_NAME = 'rilke_db_v1';
+var DB_VERSION = 1;
+var DB_STORE_NAME = 'state';
+var DB_STATE_KEY = 'appState';
 
 // ─── State ───
-var S = {
-  cards: [],
-  pairRelations: [],
-  compositions: [],
-  matrixSessions: [],
-  deletedIds: {},
-  config: {
-    appName: 'Rilke',
-    matrixCols: 5,
-    matrixRows: 4,
-    exportMode: 'plain',
-    storageMode: 'local'
-  },
-  _lastExported: ''
-};
+function createDefaultState() {
+  return {
+    cards: [],
+    pairRelations: [],
+    compositions: [],
+    matrixSessions: [],
+    deletedIds: {},
+    config: {
+      appName: 'Rilke',
+      matrixCols: 5,
+      matrixRows: 4,
+      exportMode: 'plain',
+      storageMode: 'local'
+    },
+    _lastExported: ''
+  };
+}
+
+var S = createDefaultState();
 
 var UI = {
   tab: 'cards',
@@ -299,23 +308,133 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s 
 function $(id) { return document.getElementById(id); }
 
 // ─── Persistence ───
-function persistLocalOnly() {
-  try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch(e) { console.error('Save failed', e); }
+var _db = null;
+var _dbOpenPromise = null;
+var _writeQueue = Promise.resolve();
+var _persistenceReady = false;
+var _storageBackend = 'starting';
+var _legacyMigratedThisSession = false;
+var _lastStorageError = null;
+var _storageReadOnly = false;
+var _lastSaveErrorToastAt = 0;
+
+function isPlausibleRilkeState(value) {
+  return !!(value && typeof value === 'object' && Array.isArray(value.cards));
 }
 
-function save() {
-  S._lastExported = now();
-  persistLocalOnly();
+function cloneState(value) {
+  return JSON.parse(JSON.stringify(value));
 }
-var _saveTimer = null;
-function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(save, 400); }
 
-function load() {
-  try {
-    var d = localStorage.getItem(LKEY);
-    if (d) { var p = JSON.parse(d); if (p && p.cards) S = p; }
-  } catch(e) { console.error('Load failed', e); }
-  if (!S.cards) S.cards = [];
+function openRilkeDb() {
+  if (_db) return Promise.resolve(_db);
+  if (_dbOpenPromise) return _dbOpenPromise;
+  _dbOpenPromise = new Promise(function(resolve, reject) {
+    if (!window.indexedDB) {
+      reject(new Error('IndexedDB ist in diesem Browser nicht verfügbar'));
+      return;
+    }
+    var req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = function(event) {
+      var db = event.target.result;
+      if (!db.objectStoreNames.contains(DB_STORE_NAME)) {
+        db.createObjectStore(DB_STORE_NAME);
+      }
+    };
+    req.onsuccess = function(event) {
+      _db = event.target.result;
+      _db.onversionchange = function() {
+        console.warn('Rilke IndexedDB versionchange: Datenbankverbindung wird geschlossen. Bitte andere Rilke-Tabs neu laden.');
+        _db.close();
+        _db = null;
+        _dbOpenPromise = null;
+      };
+      resolve(_db);
+    };
+    req.onerror = function(event) {
+      console.error('Rilke IndexedDB konnte nicht geöffnet werden', event.target.error);
+      reject(event.target.error || new Error('IndexedDB open failed'));
+    };
+    req.onblocked = function() {
+      console.warn('Rilke IndexedDB Upgrade blockiert. Bitte ggf. einen anderen geöffneten Rilke-Tab schließen.');
+    };
+  }).catch(function(err) {
+    _dbOpenPromise = null;
+    throw err;
+  });
+  return _dbOpenPromise;
+}
+
+function idbGetState() {
+  return openRilkeDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx;
+      try { tx = db.transaction(DB_STORE_NAME, 'readonly'); }
+      catch (e) { reject(e); return; }
+      var store = tx.objectStore(DB_STORE_NAME);
+      var result;
+      var req = store.get(DB_STATE_KEY);
+      req.onsuccess = function() { result = req.result; };
+      tx.oncomplete = function() { resolve(result); };
+      req.onerror = function(event) {
+        console.error('Rilke IndexedDB State konnte nicht gelesen werden', event.target.error);
+        reject(event.target.error || new Error('IndexedDB read failed'));
+      };
+      tx.onerror = function(event) {
+        reject(event.target.error || tx.error || new Error('IndexedDB read transaction failed'));
+      };
+      tx.onabort = function() {
+        reject(tx.error || new Error('IndexedDB read transaction aborted'));
+      };
+    });
+  });
+}
+
+function idbSetState(stateSnapshot) {
+  return openRilkeDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx;
+      try { tx = db.transaction(DB_STORE_NAME, 'readwrite'); }
+      catch (e) { reject(e); return; }
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function(event) {
+        console.error('Rilke IndexedDB State konnte nicht geschrieben werden', event.target.error || tx.error);
+        reject(event.target.error || tx.error || new Error('IndexedDB write failed'));
+      };
+      tx.onabort = function() {
+        console.error('Rilke IndexedDB Schreibtransaktion abgebrochen', tx.error);
+        reject(tx.error || new Error('IndexedDB write transaction aborted'));
+      };
+      tx.objectStore(DB_STORE_NAME).put(stateSnapshot, DB_STATE_KEY);
+    });
+  });
+}
+
+function enqueueStateWrite(stateSnapshot) {
+  var op = _writeQueue.catch(function(){ /* keep queue alive after failed write */ }).then(function() {
+    return idbSetState(stateSnapshot);
+  });
+  _writeQueue = op.catch(function(){ /* next write may still run */ });
+  return op;
+}
+
+function handleStorageError(context, err) {
+  _lastStorageError = context + ': ' + (err && err.message ? err.message : String(err));
+  console.error(context, err);
+}
+
+function notifySaveError(err) {
+  handleStorageError('Rilke Speicherfehler: Änderungen wurden nicht dauerhaft gespeichert. Bitte ZIP-Backup als Recovery nutzen.', err);
+  var t = Date.now();
+  if (t - _lastSaveErrorToastAt > 6000) {
+    _lastSaveErrorToastAt = t;
+    toast('Speicherfehler: Änderungen nicht dauerhaft gespeichert. ZIP-Backup empfohlen.');
+  }
+}
+
+function normalizeLoadedState() {
+  var changed = false;
+  if (!Array.isArray(S.cards)) { S.cards = []; changed = true; }
   var sidMigrationCount = 0;
   for (var i = 0; i < S.cards.length; i++) {
     var card = S.cards[i];
@@ -331,25 +450,94 @@ function load() {
     if (migratedSid !== rawSid) {
       card.sid = migratedSid;
       sidMigrationCount++;
+      changed = true;
     }
   }
-  if (!S.pairRelations) S.pairRelations = [];
-  if (!S.compositions) S.compositions = [];
-  if (!S.matrixSessions) S.matrixSessions = [];
-  if (!S.deletedIds) S.deletedIds = {};
-  if (!S.config) S.config = {};
-  if (!S.config.matrixCols) S.config.matrixCols = 5;
-  if (!S.config.matrixRows) S.config.matrixRows = 4;
-  var configMigrationApplied = false;
-  if (S.config.storageMode !== 'local') {
-    S.config.storageMode = 'local';
-    configMigrationApplied = true;
-  }
-  if (sidMigrationCount > 0 || configMigrationApplied) {
-    persistLocalOnly();
-    if (sidMigrationCount > 0) console.log('SID migration applied to ' + sidMigrationCount + ' cards');
+  if (!Array.isArray(S.pairRelations)) { S.pairRelations = []; changed = true; }
+  if (!Array.isArray(S.compositions)) { S.compositions = []; changed = true; }
+  if (!Array.isArray(S.matrixSessions)) { S.matrixSessions = []; changed = true; }
+  if (!S.deletedIds || typeof S.deletedIds !== 'object' || Array.isArray(S.deletedIds)) { S.deletedIds = {}; changed = true; }
+  if (!S.config || typeof S.config !== 'object') { S.config = {}; changed = true; }
+  if (!S.config.appName) { S.config.appName = 'Rilke'; changed = true; }
+  if (!S.config.matrixCols) { S.config.matrixCols = 5; changed = true; }
+  if (!S.config.matrixRows) { S.config.matrixRows = 4; changed = true; }
+  if (!S.config.exportMode) { S.config.exportMode = 'plain'; changed = true; }
+  if (S.config.storageMode !== 'local') { S.config.storageMode = 'local'; changed = true; }
+  if (typeof S._lastExported !== 'string') { S._lastExported = ''; changed = true; }
+  if (sidMigrationCount > 0) console.log('SID migration applied to ' + sidMigrationCount + ' cards');
+  return changed;
+}
+
+function getLegacyStateIfPlausible() {
+  try {
+    var d = localStorage.getItem(LKEY);
+    if (!d) return null;
+    var p = JSON.parse(d);
+    return isPlausibleRilkeState(p) ? p : null;
+  } catch(e) {
+    console.warn('Legacy localStorage-State konnte nicht gelesen oder geparst werden; keine Migration.', e);
+    return null;
   }
 }
+
+async function load() {
+  try {
+    var idbState = await idbGetState();
+    if (idbState !== undefined && idbState !== null) {
+      if (!isPlausibleRilkeState(idbState)) {
+        var plausibilityError = new Error('Vorhandener IndexedDB-State ist unplausibel und wurde nicht überschrieben.');
+        plausibilityError.isUnplausibleIdbState = true;
+        throw plausibilityError;
+      }
+      S = idbState;
+      if (normalizeLoadedState()) await enqueueStateWrite(cloneState(S));
+      _storageBackend = 'indexeddb';
+      _persistenceReady = true;
+      return;
+    }
+
+    var legacy = getLegacyStateIfPlausible();
+    if (legacy) {
+      S = legacy;
+      normalizeLoadedState();
+      await enqueueStateWrite(cloneState(S));
+      _legacyMigratedThisSession = true;
+      _storageBackend = 'indexeddb';
+      _persistenceReady = true;
+      return;
+    }
+
+    S = createDefaultState();
+    normalizeLoadedState();
+    await enqueueStateWrite(cloneState(S));
+    _storageBackend = 'indexeddb';
+    _persistenceReady = true;
+  } catch(e) {
+    handleStorageError('Rilke IndexedDB-Startfehler. Bestehende IndexedDB-Daten wurden nicht überschrieben.', e);
+    _storageBackend = e && e.isUnplausibleIdbState ? 'idb-error' : 'emergency';
+    _storageReadOnly = true;
+    _persistenceReady = true;
+    var fallback = e && e.isUnplausibleIdbState ? null : getLegacyStateIfPlausible();
+    S = fallback || createDefaultState();
+    normalizeLoadedState();
+  }
+}
+
+function save() {
+  if (!_persistenceReady || _storageReadOnly || _storageBackend !== 'indexeddb') {
+    var err = new Error('Persistenz ist nicht schreibbereit; State bleibt nur im Speicher.');
+    var failed = Promise.reject(err);
+    failed.catch(notifySaveError);
+    return failed;
+  }
+  S._lastExported = now();
+  var snapshot = cloneState(S);
+  var op = enqueueStateWrite(snapshot);
+  op.catch(notifySaveError);
+  return op;
+}
+var _saveTimer = null;
+function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(function(){ save(); }, 400); }
 
 // ─── Card helpers ───
 function findCard(u) { return S.cards.find(function(c){return c.uid===u}); }
@@ -607,14 +795,34 @@ function openModal(html) { $('modal-body').innerHTML = html; $('modal-overlay').
 function closeModal() { $('modal-overlay').classList.remove('open'); }
 
 function openSettingsModal() {
+  var statusHtml = '';
+  var idbCardClass = 'storage-mode-card active';
+  var idbBadge = 'aktiv';
+  var idbDescription = 'Der vollständige Rilke-State wird lokal in IndexedDB gespeichert.';
+  if (_storageBackend === 'emergency' || _storageBackend === 'idb-error') {
+    idbCardClass = 'storage-mode-card disabled';
+    idbBadge = 'Fehler';
+    idbDescription = 'IndexedDB ist in dieser Sitzung nicht zuverlässig verfügbar. Bestehende IndexedDB-Daten wurden nicht überschrieben.';
+    statusHtml = '<div class="storage-mode-card disabled" aria-disabled="true">' +
+      '<div class="storage-mode-head"><span class="storage-mode-title">Speicher-Notfallmodus</span><span class="storage-mode-badge">Fehler</span></div>' +
+      '<div class="detail-meta">Änderungen werden nicht als dauerhaft gespeichert behandelt; bitte ZIP-Backup exportieren. ' + esc(_lastStorageError || '') + '</div>' +
+    '</div>';
+  } else if (_legacyMigratedThisSession) {
+    statusHtml = '<div class="detail-meta">Legacy-State wurde in dieser Sitzung erfolgreich nach IndexedDB übernommen.</div>';
+  }
   openModal(
     '<h3>Speicher</h3>' +
     '<div class="field">' +
       '<div class="detail-label">Aktiver Speicher-Modus</div>' +
       '<div class="storage-mode-list">' +
-        '<div class="storage-mode-card active">' +
-          '<div class="storage-mode-head"><span class="storage-mode-title">Lokaler Speicher</span><span class="storage-mode-badge">aktiv</span></div>' +
-          '<div class="detail-meta">Daten werden aktuell im Browser-localStorage gespeichert.</div>' +
+        statusHtml +
+        '<div class="' + idbCardClass + '">' +
+          '<div class="storage-mode-head"><span class="storage-mode-title">IndexedDB lokaler Speicher</span><span class="storage-mode-badge">' + idbBadge + '</span></div>' +
+          '<div class="detail-meta">' + idbDescription + '</div>' +
+        '</div>' +
+        '<div class="storage-mode-card">' +
+          '<div class="storage-mode-head"><span class="storage-mode-title">Browser-localStorage</span><span class="storage-mode-badge">Legacy</span></div>' +
+          '<div class="detail-meta">Wird nur zur einmaligen Migration gelesen, wenn IndexedDB leer ist. Vorhandene alte Daten werden nicht automatisch gelöscht; localStorage ist nicht mehr Source of Truth.</div>' +
         '</div>' +
         '<div class="storage-mode-card disabled" aria-disabled="true">' +
           '<div class="storage-mode-head"><span class="storage-mode-title">Ordner-Modus</span><span class="storage-mode-badge">später</span></div>' +
@@ -1467,11 +1675,25 @@ function doDeleteComp(compUid) {
    INIT
    ═══════════════════════════════════════════ */
 
-function init() { load(); switchTab('cards'); }
+async function init() {
+  document.body.classList.add('app-loading');
+  document.body.setAttribute('aria-busy', 'true');
+  await load();
+  switchTab('cards');
+  document.body.classList.remove('app-loading');
+  document.body.removeAttribute('aria-busy');
+  if (_storageReadOnly) toast('Speicherproblem: ZIP-Backup empfohlen.');
+}
 
 document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-init();
+init().catch(function(e) {
+  handleStorageError('Rilke konnte nicht vollständig starten', e);
+  document.body.classList.remove('app-loading');
+  document.body.removeAttribute('aria-busy');
+  switchTab('cards');
+  toast('Startfehler: Speicher prüfen, ZIP-Backup empfohlen.');
+});
 </script>
 </body>
 </html>
