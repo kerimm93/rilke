@@ -23,6 +23,7 @@
 }
 html{font-size:15px}
 body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:100vh;line-height:1.5}
+body.app-loading{pointer-events:none;cursor:progress}
 input,textarea,select,button{font-family:inherit;font-size:inherit;color:inherit}
 button{cursor:pointer}
 a{color:var(--accent);text-decoration:none}
@@ -199,12 +200,12 @@ a{color:var(--accent);text-decoration:none}
   <div class="brainstorm-toolbar">
     <button class="btn" onclick="shuffleBrainstorm()">⟳ Neu mischen</button>
     <label style="font-size:0.8rem;color:var(--ink-light)">Spalten:
-      <select id="bs-cols" onchange="S.config.matrixCols=+this.value;renderBrainstorm()" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
+      <select id="bs-cols" onchange="setBrainstormCols(this.value)" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
         <option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option>
       </select>
     </label>
     <label style="font-size:0.8rem;color:var(--ink-light)">Zeilen:
-      <select id="bs-rows" onchange="S.config.matrixRows=+this.value;renderBrainstorm()" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
+      <select id="bs-rows" onchange="setBrainstormRows(this.value)" style="padding:3px 6px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.8rem">
         <option value="3">3</option><option value="4" selected>4</option><option value="5">5</option><option value="6">6</option>
       </select>
     </label>
@@ -259,23 +260,32 @@ a{color:var(--accent);text-decoration:none}
 
 // ─── Storage Keys ───
 var LKEY = 'poem_zettelkasten_v1';
+var LEGACY_MIGRATION_MARKER_KEY = 'rilke_idb_legacy_migration_v1';
+var DB_NAME = 'rilke_db_v1';
+var DB_VERSION = 1;
+var DB_STORE_NAME = 'state';
+var DB_STATE_KEY = 'appState';
 
 // ─── State ───
-var S = {
-  cards: [],
-  pairRelations: [],
-  compositions: [],
-  matrixSessions: [],
-  deletedIds: {},
-  config: {
-    appName: 'Rilke',
-    matrixCols: 5,
-    matrixRows: 4,
-    exportMode: 'plain',
-    storageMode: 'local'
-  },
-  _lastExported: ''
-};
+function createDefaultState() {
+  return {
+    cards: [],
+    pairRelations: [],
+    compositions: [],
+    matrixSessions: [],
+    deletedIds: {},
+    config: {
+      appName: 'Rilke',
+      matrixCols: 5,
+      matrixRows: 4,
+      exportMode: 'plain',
+      storageMode: 'local'
+    },
+    _lastExported: ''
+  };
+}
+
+var S = createDefaultState();
 
 var UI = {
   tab: 'cards',
@@ -299,26 +309,288 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s 
 function $(id) { return document.getElementById(id); }
 
 // ─── Persistence ───
-function persistLocalOnly() {
-  try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch(e) { console.error('Save failed', e); }
+var _db = null;
+var _dbOpenPromise = null;
+var _writeQueue = Promise.resolve();
+var _persistenceReady = false;
+var _storageBackend = 'starting';
+var _legacyMigratedThisSession = false;
+var _legacyConflictDetected = false;
+var _legacyConflictSnapshots = [];
+var _activeStateTimestamp = null;
+var _lastStorageError = null;
+var _storageReadOnly = false;
+var _storageWriteError = false;
+var _lastSaveErrorToastAt = 0;
+
+function isPlausibleRilkeState(value) {
+  return !!(value && typeof value === 'object' && Array.isArray(value.cards));
 }
 
-function save() {
-  S._lastExported = now();
-  persistLocalOnly();
+function cloneState(value) {
+  return JSON.parse(JSON.stringify(value));
 }
-var _saveTimer = null;
-function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(save, 400); }
 
-function load() {
+function getStateTimestamp(state) {
+  if (!state || typeof state._lastExported !== 'string') return null;
+  var value = Date.parse(state._lastExported);
+  return isNaN(value) ? null : value;
+}
+
+function normalizedStateCloneForComparison(state) {
+  var copy = cloneState(state || {});
+  normalizeStateObject(copy, { silent: true });
+  return copy;
+}
+
+function stateComparableSnapshot(state) {
+  var snapshot = normalizedStateCloneForComparison(state || {});
+  delete snapshot._lastExported;
+  return snapshot;
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return '[' + value.map(function(item){ return stableStringify(item); }).join(',') + ']';
+  }
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map(function(key){
+      return JSON.stringify(key) + ':' + stableStringify(value[key]);
+    }).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function getComparableStateString(state) {
+  return stableStringify(stateComparableSnapshot(state));
+}
+
+function fingerprintComparableState(state) {
+  var value = getComparableStateString(state);
+  var hash = 2166136261;
+  for (var i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return value.length + ':' + (hash >>> 0).toString(16);
+}
+
+function areStatesEquivalent(a, b) {
   try {
-    var d = localStorage.getItem(LKEY);
-    if (d) { var p = JSON.parse(d); if (p && p.cards) S = p; }
-  } catch(e) { console.error('Load failed', e); }
-  if (!S.cards) S.cards = [];
+    return getComparableStateString(a) === getComparableStateString(b);
+  } catch(e) {
+    console.warn('State-Vergleich fehlgeschlagen', e);
+    return false;
+  }
+}
+
+function readLegacyMigrationMarker() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    var raw = localStorage.getItem(LEGACY_MIGRATION_MARKER_KEY);
+    if (!raw) return null;
+    var marker = JSON.parse(raw);
+    if (!marker || marker.schemaVersion !== 'rilke-legacy-migration-v1' || typeof marker.legacyFingerprint !== 'string') return null;
+    return marker;
+  } catch(e) {
+    console.warn('Legacy-Migrationsmarker konnte nicht gelesen werden', e);
+    return null;
+  }
+}
+
+function writeLegacyMigrationMarker(legacyState) {
+  try {
+    var marker = {
+      schemaVersion: 'rilke-legacy-migration-v1',
+      legacyFingerprint: fingerprintComparableState(legacyState),
+      migratedAt: now()
+    };
+    localStorage.setItem(LEGACY_MIGRATION_MARKER_KEY, JSON.stringify(marker));
+    return true;
+  } catch(e) {
+    console.warn('Legacy-Migrationsmarker konnte nicht geschrieben werden', e);
+    return false;
+  }
+}
+
+function isKnownMigratedLegacyBaseline(legacyState, marker) {
+  marker = marker || readLegacyMigrationMarker();
+  return !!(marker && marker.legacyFingerprint === fingerprintComparableState(legacyState));
+}
+
+function compareLegacyFreshness(idbState, legacyState, marker) {
+  if (!isPlausibleRilkeState(legacyState)) return 'no-legacy';
+  if (areStatesEquivalent(idbState, legacyState)) return 'same';
+  var idbTs = getStateTimestamp(idbState);
+  var legacyTs = getStateTimestamp(legacyState);
+  if (legacyTs === null && isKnownMigratedLegacyBaseline(legacyState, marker)) return 'idb-newer';
+  if (idbTs !== null && legacyTs !== null && legacyTs < idbTs) return 'idb-newer';
+  return 'conflict';
+}
+
+function captureLegacyConflictSnapshot(legacyState, source) {
+  if (!isPlausibleRilkeState(legacyState)) return null;
+  var copy = cloneState(legacyState);
+  var fingerprint = fingerprintComparableState(copy);
+  for (var i = 0; i < _legacyConflictSnapshots.length; i++) {
+    if (_legacyConflictSnapshots[i].fingerprint === fingerprint) return _legacyConflictSnapshots[i];
+  }
+  var entry = {
+    state: copy,
+    source: source || 'unknown',
+    capturedAt: now(),
+    legacyTimestamp: getStateTimestamp(copy),
+    fingerprint: fingerprint
+  };
+  _legacyConflictSnapshots.push(entry);
+  while (_legacyConflictSnapshots.length > 5) _legacyConflictSnapshots.shift();
+  return entry;
+}
+
+function activateIndexedDbMode(state) {
+  _storageBackend = 'indexeddb';
+  _storageReadOnly = false;
+  _storageWriteError = false;
+  _legacyConflictDetected = false;
+  _lastStorageError = null;
+  _activeStateTimestamp = getStateTimestamp(state);
+  _persistenceReady = true;
+}
+
+function markLegacyConflict(message) {
+  _storageBackend = 'legacy-conflict';
+  _storageReadOnly = true;
+  _storageWriteError = true;
+  _legacyConflictDetected = true;
+  _persistenceReady = true;
+  handleStorageError(message, new Error('Legacy-/IndexedDB-Konflikt'));
+}
+
+function openRilkeDb() {
+  if (_db) return Promise.resolve(_db);
+  if (_dbOpenPromise) return _dbOpenPromise;
+  _dbOpenPromise = new Promise(function(resolve, reject) {
+    if (!window.indexedDB) {
+      reject(new Error('IndexedDB ist in diesem Browser nicht verfügbar'));
+      return;
+    }
+    var req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = function(event) {
+      var db = event.target.result;
+      if (!db.objectStoreNames.contains(DB_STORE_NAME)) {
+        db.createObjectStore(DB_STORE_NAME);
+      }
+    };
+    req.onsuccess = function(event) {
+      _db = event.target.result;
+      _db.onversionchange = function() {
+        console.warn('Rilke IndexedDB versionchange: Datenbankverbindung wird geschlossen. Bitte andere Rilke-Tabs neu laden.');
+        _db.close();
+        _db = null;
+        _dbOpenPromise = null;
+      };
+      resolve(_db);
+    };
+    req.onerror = function(event) {
+      console.error('Rilke IndexedDB konnte nicht geöffnet werden', event.target.error);
+      reject(event.target.error || new Error('IndexedDB open failed'));
+    };
+    req.onblocked = function() {
+      console.warn('Rilke IndexedDB Upgrade blockiert. Bitte ggf. einen anderen geöffneten Rilke-Tab schließen.');
+    };
+  }).catch(function(err) {
+    _dbOpenPromise = null;
+    throw err;
+  });
+  return _dbOpenPromise;
+}
+
+function idbGetState() {
+  return openRilkeDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx;
+      try { tx = db.transaction(DB_STORE_NAME, 'readonly'); }
+      catch (e) { reject(e); return; }
+      var store = tx.objectStore(DB_STORE_NAME);
+      var result;
+      var req = store.get(DB_STATE_KEY);
+      req.onsuccess = function() { result = req.result; };
+      tx.oncomplete = function() { resolve(result); };
+      req.onerror = function(event) {
+        console.error('Rilke IndexedDB State konnte nicht gelesen werden', event.target.error);
+        reject(event.target.error || new Error('IndexedDB read failed'));
+      };
+      tx.onerror = function(event) {
+        reject(event.target.error || tx.error || new Error('IndexedDB read transaction failed'));
+      };
+      tx.onabort = function() {
+        reject(tx.error || new Error('IndexedDB read transaction aborted'));
+      };
+    });
+  });
+}
+
+function idbSetState(stateSnapshot) {
+  return openRilkeDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx;
+      try { tx = db.transaction(DB_STORE_NAME, 'readwrite'); }
+      catch (e) { reject(e); return; }
+      tx.oncomplete = function() { resolve(); };
+      tx.onerror = function(event) {
+        console.error('Rilke IndexedDB State konnte nicht geschrieben werden', event.target.error || tx.error);
+        reject(event.target.error || tx.error || new Error('IndexedDB write failed'));
+      };
+      tx.onabort = function() {
+        console.error('Rilke IndexedDB Schreibtransaktion abgebrochen', tx.error);
+        reject(tx.error || new Error('IndexedDB write transaction aborted'));
+      };
+      tx.objectStore(DB_STORE_NAME).put(stateSnapshot, DB_STATE_KEY);
+    });
+  });
+}
+
+function enqueueStateWrite(stateSnapshot) {
+  var op = _writeQueue.catch(function(){ /* keep queue alive after failed write */ }).then(function() {
+    return idbSetState(stateSnapshot);
+  });
+  _writeQueue = op.catch(function(){ /* next write may still run */ });
+  return op;
+}
+
+function handleStorageError(context, err) {
+  _lastStorageError = context + ': ' + (err && err.message ? err.message : String(err));
+  console.error(context, err);
+}
+
+function notifySaveError(err) {
+  _storageWriteError = true;
+  handleStorageError('Rilke Speicherfehler: Änderungen wurden nicht dauerhaft gespeichert. Bitte ZIP-Backup als Recovery nutzen.', err);
+  var t = Date.now();
+  if (t - _lastSaveErrorToastAt > 6000) {
+    _lastSaveErrorToastAt = t;
+    toast('Speicherfehler: Änderungen nicht dauerhaft gespeichert. ZIP-Backup empfohlen.');
+  }
+}
+
+function isStateWritable() {
+  return _persistenceReady && !_storageReadOnly && !_storageWriteError && _storageBackend === 'indexeddb';
+}
+
+function ensureStateWritable() {
+  if (isStateWritable()) return true;
+  toast('Nur-Lese-Modus: Bitte ZIP-Backup exportieren und das Speicherproblem beheben.');
+  return false;
+}
+
+function normalizeStateObject(state, options) {
+  options = options || {};
+  var T = state || {};
+  var changed = false;
+  if (!Array.isArray(T.cards)) { T.cards = []; changed = true; }
   var sidMigrationCount = 0;
-  for (var i = 0; i < S.cards.length; i++) {
-    var card = S.cards[i];
+  for (var i = 0; i < T.cards.length; i++) {
+    var card = T.cards[i];
     if (!card || card.sid === null || card.sid === undefined) continue;
     var rawSid = String(card.sid).trim();
     if (!rawSid) continue;
@@ -331,25 +603,163 @@ function load() {
     if (migratedSid !== rawSid) {
       card.sid = migratedSid;
       sidMigrationCount++;
+      changed = true;
     }
   }
-  if (!S.pairRelations) S.pairRelations = [];
-  if (!S.compositions) S.compositions = [];
-  if (!S.matrixSessions) S.matrixSessions = [];
-  if (!S.deletedIds) S.deletedIds = {};
-  if (!S.config) S.config = {};
-  if (!S.config.matrixCols) S.config.matrixCols = 5;
-  if (!S.config.matrixRows) S.config.matrixRows = 4;
-  var configMigrationApplied = false;
-  if (S.config.storageMode !== 'local') {
-    S.config.storageMode = 'local';
-    configMigrationApplied = true;
-  }
-  if (sidMigrationCount > 0 || configMigrationApplied) {
-    persistLocalOnly();
-    if (sidMigrationCount > 0) console.log('SID migration applied to ' + sidMigrationCount + ' cards');
+  if (!Array.isArray(T.pairRelations)) { T.pairRelations = []; changed = true; }
+  if (!Array.isArray(T.compositions)) { T.compositions = []; changed = true; }
+  if (!Array.isArray(T.matrixSessions)) { T.matrixSessions = []; changed = true; }
+  if (!T.deletedIds || typeof T.deletedIds !== 'object' || Array.isArray(T.deletedIds)) { T.deletedIds = {}; changed = true; }
+  if (!T.config || typeof T.config !== 'object') { T.config = {}; changed = true; }
+  if (!T.config.appName) { T.config.appName = 'Rilke'; changed = true; }
+  if (!T.config.matrixCols) { T.config.matrixCols = 5; changed = true; }
+  if (!T.config.matrixRows) { T.config.matrixRows = 4; changed = true; }
+  if (!T.config.exportMode) { T.config.exportMode = 'plain'; changed = true; }
+  if (T.config.storageMode !== 'local') { T.config.storageMode = 'local'; changed = true; }
+  if (typeof T._lastExported !== 'string') { T._lastExported = ''; changed = true; }
+  if (sidMigrationCount > 0 && !options.silent) console.log('SID migration applied to ' + sidMigrationCount + ' cards');
+  return changed;
+}
+
+function normalizeLoadedState() {
+  return normalizeStateObject(S);
+}
+
+function getLegacyStateIfPlausible() {
+  try {
+    var d = localStorage.getItem(LKEY);
+    if (!d) return null;
+    var p = JSON.parse(d);
+    return isPlausibleRilkeState(p) ? p : null;
+  } catch(e) {
+    console.warn('Legacy localStorage-State konnte nicht gelesen oder geparst werden; keine Migration.', e);
+    return null;
   }
 }
+
+async function load() {
+  var idbState;
+  try {
+    idbState = await idbGetState();
+  } catch(e) {
+    handleStorageError('Rilke IndexedDB konnte nicht geöffnet oder gelesen werden. Bestehende IndexedDB-Daten wurden nicht überschrieben.', e);
+    _storageBackend = 'emergency';
+    _storageReadOnly = true;
+    _persistenceReady = true;
+    var fallback = getLegacyStateIfPlausible();
+    S = fallback || createDefaultState();
+    normalizeLoadedState();
+    return;
+  }
+
+  if (idbState !== undefined && idbState !== null) {
+    if (!isPlausibleRilkeState(idbState)) {
+      handleStorageError('Vorhandener IndexedDB-State ist unplausibel und wurde nicht überschrieben.', new Error('Unplausibler IndexedDB-State'));
+      _storageBackend = 'idb-error';
+      _storageReadOnly = true;
+      _persistenceReady = true;
+      S = createDefaultState();
+      normalizeLoadedState();
+      return;
+    }
+
+    var rolloutLegacy = getLegacyStateIfPlausible();
+    var freshness = compareLegacyFreshness(idbState, rolloutLegacy);
+    if (freshness === 'conflict') {
+      captureLegacyConflictSnapshot(rolloutLegacy, 'startup');
+      S = idbState;
+      normalizeLoadedState();
+      markLegacyConflict('IndexedDB und Legacy-localStorage enthalten unterschiedliche, zeitlich nicht eindeutig sortierbare Stände. Bestehende IndexedDB-Daten wurden nicht überschrieben.');
+      _activeStateTimestamp = getStateTimestamp(S);
+      return;
+    }
+
+    S = idbState;
+    if (normalizeLoadedState()) {
+      try {
+        await enqueueStateWrite(cloneState(S));
+      } catch(e) {
+        handleStorageError('Normalisierter IndexedDB-State konnte nicht zurückgeschrieben werden. Geladener State bleibt im Arbeitsspeicher.', e);
+        _storageBackend = 'idb-write-error';
+        _storageReadOnly = true;
+        _storageWriteError = true;
+        _activeStateTimestamp = getStateTimestamp(S);
+        _persistenceReady = true;
+        return;
+      }
+    }
+    activateIndexedDbMode(S);
+    return;
+  }
+
+  var legacy = getLegacyStateIfPlausible();
+  if (legacy) {
+    S = legacy;
+    normalizeLoadedState();
+    try {
+      await enqueueStateWrite(cloneState(S));
+    } catch(e) {
+      handleStorageError('Legacy-State wurde ausgewählt, konnte aber nicht erstmals nach IndexedDB geschrieben werden. State bleibt nur im Arbeitsspeicher.', e);
+      _storageBackend = 'emergency';
+      _storageReadOnly = true;
+      _storageWriteError = true;
+      _persistenceReady = true;
+      return;
+    }
+    var markerWritten = writeLegacyMigrationMarker(legacy);
+    if (!markerWritten && getStateTimestamp(legacy) === null) {
+      handleStorageError('Die IndexedDB-Migration wurde geschrieben, aber der Legacy-Rollout-Marker konnte nicht gespeichert werden. Bearbeitung ist vorsorglich gesperrt; ZIP-Backup empfohlen.', new Error('Legacy-Migrationsmarker fehlt'));
+      _storageBackend = 'legacy-conflict';
+      _storageReadOnly = true;
+      _storageWriteError = true;
+      _legacyConflictDetected = true;
+      _activeStateTimestamp = getStateTimestamp(S);
+      _persistenceReady = true;
+      return;
+    }
+    _legacyMigratedThisSession = true;
+    activateIndexedDbMode(S);
+    return;
+  }
+
+  S = createDefaultState();
+  normalizeLoadedState();
+  try {
+    await enqueueStateWrite(cloneState(S));
+  } catch(e) {
+    handleStorageError('Default-State konnte nicht erstmals nach IndexedDB geschrieben werden. State bleibt nur im Arbeitsspeicher.', e);
+    _storageBackend = 'emergency';
+    _storageReadOnly = true;
+    _storageWriteError = true;
+    _persistenceReady = true;
+    return;
+  }
+  activateIndexedDbMode(S);
+}
+
+function save() {
+  if (!_persistenceReady || _storageReadOnly || _storageBackend !== 'indexeddb') {
+    var err = new Error('Persistenz ist nicht schreibbereit; State bleibt nur im Speicher.');
+    var failed = Promise.reject(err);
+    failed.catch(notifySaveError);
+    return failed;
+  }
+  S._lastExported = now();
+  var snapshot = cloneState(S);
+  var op = enqueueStateWrite(snapshot);
+  op.then(function() {
+    if (!_storageReadOnly) {
+      _storageWriteError = false;
+      _legacyConflictDetected = false;
+      _lastStorageError = null;
+      _storageBackend = 'indexeddb';
+      _activeStateTimestamp = getStateTimestamp(S);
+    }
+  }).catch(notifySaveError);
+  return op;
+}
+var _saveTimer = null;
+function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(function(){ save(); }, 400); }
 
 // ─── Card helpers ───
 function findCard(u) { return S.cards.find(function(c){return c.uid===u}); }
@@ -515,6 +925,7 @@ function nextOrder(parentUid) {
 }
 
 function createCard(text, comment, parentUid) {
+  if (!ensureStateWritable()) return null;
   var c = {
     uid: uid(), sid: nextSid(parentUid), text: text || '', comment: comment || '',
     parentUid: parentUid || null, childUids: [], order: nextOrder(parentUid),
@@ -531,20 +942,24 @@ function createCard(text, comment, parentUid) {
 }
 
 function updateCard(cardUid, fields) {
+  if (!ensureStateWritable()) return false;
   var c = findCard(cardUid);
-  if (!c) return;
+  if (!c) return false;
   Object.keys(fields).forEach(function(k){ c[k] = fields[k]; });
   c.updatedAt = now();
   saveDebounced();
+  return true;
 }
 
-function deleteCard(cardUid) {
+function deleteCard(cardUid, skipWritableCheck) {
+  if (!skipWritableCheck && !ensureStateWritable()) return false;
   var c = findCard(cardUid);
-  if (!c) return;
+  if (!c) return false;
   c.status = 'archived'; c.updatedAt = now();
   S.deletedIds[cardUid] = now();
-  (c.childUids||[]).forEach(function(cid){ deleteCard(cid); });
+  (c.childUids||[]).forEach(function(cid){ deleteCard(cid, true); });
   saveDebounced();
+  return true;
 }
 
 // ─── Split Logic ───
@@ -559,6 +974,7 @@ function createRelation(fromUid, toUid, posType, origin) {
     return r.fromCardUid===fromUid && r.toCardUid===toUid && r.origin===origin;
   });
   if (exists) return exists;
+  if (!ensureStateWritable()) return null;
   var r = {
     uid: 'pair_' + uid(), fromCardUid: fromUid, toCardUid: toUid,
     origin: origin || 'brainstorm', positionType: posType || '',
@@ -607,14 +1023,35 @@ function openModal(html) { $('modal-body').innerHTML = html; $('modal-overlay').
 function closeModal() { $('modal-overlay').classList.remove('open'); }
 
 function openSettingsModal() {
+  var statusHtml = '';
+  var idbCardClass = 'storage-mode-card active';
+  var idbBadge = 'aktiv';
+  var idbDescription = 'Der vollständige Rilke-State wird lokal in IndexedDB gespeichert.';
+  if (_storageBackend === 'emergency' || _storageBackend === 'idb-error' || _storageBackend === 'idb-write-error' || _storageBackend === 'legacy-conflict' || _storageWriteError) {
+    idbCardClass = 'storage-mode-card disabled';
+    idbBadge = 'Fehler';
+    idbDescription = 'IndexedDB ist in dieser Sitzung nicht zuverlässig verfügbar. Bestehende IndexedDB-Daten wurden nicht überschrieben.';
+    var conflictText = _storageBackend === 'legacy-conflict' ? 'Ein älterer Rilke-Tab enthält einen später gespeicherten oder widersprüchlichen, nicht sicher vollständigen localStorage-Stand. Der vorhandene IndexedDB-State wurde nicht überschrieben. Schließe andere Rilke-Tabs, sichere den aktuellen Stand bei Bedarf als ZIP und lade diese Seite neu. ' + (_legacyConflictSnapshots.length > 0 ? 'Der ZIP-Export enthält den aktuell angezeigten IndexedDB-Stand und die in dieser Sitzung erkannten abweichenden Legacy-Snapshots getrennt zur manuellen Prüfung. ' : 'Aktuell ist kein abweichender Legacy-Snapshot im Arbeitsspeicher verfügbar; der ZIP-Export kann nur den angezeigten Stand sichern. ') : '';
+    statusHtml = '<div class="storage-mode-card disabled" aria-disabled="true">' +
+      '<div class="storage-mode-head"><span class="storage-mode-title">Speicher-Notfallmodus</span><span class="storage-mode-badge">Fehler</span></div>' +
+      '<div class="detail-meta">Bearbeitung ist in dieser Sitzung gesperrt. Inhalte können angesehen und als ZIP gesichert werden. ' + conflictText + esc(_lastStorageError || '') + '</div>' +
+    '</div>';
+  } else if (_legacyMigratedThisSession) {
+    statusHtml = '<div class="detail-meta">Legacy-State wurde in dieser Sitzung erfolgreich nach IndexedDB übernommen.</div>';
+  }
   openModal(
     '<h3>Speicher</h3>' +
     '<div class="field">' +
       '<div class="detail-label">Aktiver Speicher-Modus</div>' +
       '<div class="storage-mode-list">' +
-        '<div class="storage-mode-card active">' +
-          '<div class="storage-mode-head"><span class="storage-mode-title">Lokaler Speicher</span><span class="storage-mode-badge">aktiv</span></div>' +
-          '<div class="detail-meta">Daten werden aktuell im Browser-localStorage gespeichert.</div>' +
+        statusHtml +
+        '<div class="' + idbCardClass + '">' +
+          '<div class="storage-mode-head"><span class="storage-mode-title">IndexedDB lokaler Speicher</span><span class="storage-mode-badge">' + idbBadge + '</span></div>' +
+          '<div class="detail-meta">' + idbDescription + '</div>' +
+        '</div>' +
+        '<div class="storage-mode-card">' +
+          '<div class="storage-mode-head"><span class="storage-mode-title">Browser-localStorage</span><span class="storage-mode-badge">Legacy</span></div>' +
+          '<div class="detail-meta">Wird nur zur einmaligen Migration gelesen, wenn IndexedDB leer ist. Vorhandene alte Daten werden nicht automatisch gelöscht; localStorage ist nicht mehr Source of Truth.</div>' +
         '</div>' +
         '<div class="storage-mode-card disabled" aria-disabled="true">' +
           '<div class="storage-mode-head"><span class="storage-mode-title">Ordner-Modus</span><span class="storage-mode-badge">später</span></div>' +
@@ -747,11 +1184,13 @@ function openNewCardModal(parentUid, type) {
 }
 
 function doCreateCard(parentUid) {
+  if (!ensureStateWritable()) return;
   var text = $('m-text').value.trim();
   if (!text) { toast('Text darf nicht leer sein'); return; }
   var comment = $('m-comment').value.trim();
   var pUid = parentUid === 'null' || parentUid === '' ? null : parentUid;
   var c = createCard(text, comment, pUid);
+  if (!c) return;
   UI.selectedCardUid = c.uid; closeModal(); renderCards();
   toast('Karte '+c.sid+' erstellt');
 }
@@ -768,7 +1207,7 @@ function openEditCardModal(cardUid) {
 }
 
 function doEditCard(cardUid) {
-  updateCard(cardUid, { text: $('m-text').value.trim(), comment: $('m-comment').value.trim(), status: $('m-status').value });
+  if (!updateCard(cardUid, { text: $('m-text').value.trim(), comment: $('m-comment').value.trim(), status: $('m-status').value })) return;
   closeModal(); renderCards(); toast('Karte gespeichert');
 }
 
@@ -783,7 +1222,8 @@ function confirmDeleteCard(cardUid) {
 }
 
 function doDeleteCard(cardUid) {
-  deleteCard(cardUid); UI.selectedCardUid = ''; closeModal(); renderCards(); toast('Karte archiviert');
+  if (!deleteCard(cardUid)) return;
+  UI.selectedCardUid = ''; closeModal(); renderCards(); toast('Karte archiviert');
 }
 
 /* ═══ SPLIT MODAL ═══ */
@@ -804,9 +1244,12 @@ function openSplitModal(cardUid) {
 }
 
 function doSplitCard(cardUid) {
+  if (!ensureStateWritable()) return;
   var c = findCard(cardUid); if (!c) return;
   var sentences = splitSentences(c.text);
-  sentences.forEach(function(s) { createCard(s, '', cardUid); });
+  var created = [];
+  sentences.forEach(function(s) { var child = createCard(s, '', cardUid); if (child) created.push(child); });
+  if (created.length !== sentences.length) return;
   closeModal(); renderCards(); toast(sentences.length + ' Unterkarten erstellt');
 }
 
@@ -917,12 +1360,28 @@ function brainstormSelectCard(cardUid) {
   var idx = order.indexOf(cardUid);
   if (idx < 0) return;
 
-  var neighborIndices = getTorusNeighbors(idx, cols, rows);
-  var labels = ['oben', 'rechts', 'unten', 'links'];
-  neighborIndices.forEach(function(ni, i) {
-    if (ni < order.length) createRelation(cardUid, order[ni], labels[i], 'brainstorm');
-  });
+  if (isStateWritable()) {
+    var neighborIndices = getTorusNeighbors(idx, cols, rows);
+    var labels = ['oben', 'rechts', 'unten', 'links'];
+    neighborIndices.forEach(function(ni, i) {
+      if (ni < order.length) createRelation(cardUid, order[ni], labels[i], 'brainstorm');
+    });
+  }
 
+  renderBrainstorm();
+}
+
+function setBrainstormCols(value) {
+  if (!ensureStateWritable()) { $('bs-cols').value = S.config.matrixCols || 5; return; }
+  S.config.matrixCols = +value;
+  saveDebounced();
+  renderBrainstorm();
+}
+
+function setBrainstormRows(value) {
+  if (!ensureStateWritable()) { $('bs-rows').value = S.config.matrixRows || 4; return; }
+  S.config.matrixRows = +value;
+  saveDebounced();
   renderBrainstorm();
 }
 
@@ -969,6 +1428,7 @@ function renderBrainstormConnections() {
 }
 
 function toggleInteresting(relUid) {
+  if (!ensureStateWritable()) return;
   var r = S.pairRelations.find(function(x){return x.uid===relUid});
   if (!r) return;
   r.isInteresting = !r.isInteresting; r.updatedAt = now();
@@ -988,6 +1448,7 @@ function openRelationNoteModal(relUid) {
 }
 
 function doSaveRelNote(relUid) {
+  if (!ensureStateWritable()) return;
   var r = S.pairRelations.find(function(x){return x.uid===relUid}); if (!r) return;
   r.note = $('m-note').value.trim(); r.updatedAt = now();
   saveDebounced(); closeModal(); renderBrainstormConnections(); toast('Notiz gespeichert');
@@ -1014,10 +1475,12 @@ function openNewCardFromRelation(relUid) {
 }
 
 function doCreateCardFromRel() {
+  if (!ensureStateWritable()) return;
   var text = $('m-text').value.trim();
   if (!text) { toast('Text darf nicht leer sein'); return; }
   var comment = $('m-comment').value.trim();
   var c = createCard(text, comment, null);
+  if (!c) return;
   closeModal(); toast('Idee \u201e'+c.sid+'\u201c erstellt');
   if (UI.tab === 'cards') { UI.selectedCardUid = c.uid; renderCards(); }
 }
@@ -1049,6 +1512,7 @@ function openNewCompModal() {
 }
 
 function doCreateComp() {
+  if (!ensureStateWritable()) return;
   var title = $('m-title').value.trim();
   if (!title) { toast('Titel fehlt'); return; }
   var c = { uid: 'comp_'+uid(), title: title, cardUids: [], createdAt: now(), updatedAt: now() };
@@ -1081,6 +1545,7 @@ function renderCompDetail() {
 }
 
 function moveCompCard(compUid, idx, dir) {
+  if (!ensureStateWritable()) return;
   var comp = findComp(compUid); if (!comp) return;
   var newIdx = idx + dir;
   if (newIdx < 0 || newIdx >= comp.cardUids.length) return;
@@ -1089,12 +1554,14 @@ function moveCompCard(compUid, idx, dir) {
 }
 
 function removeCompCard(compUid, idx) {
+  if (!ensureStateWritable()) return;
   var comp = findComp(compUid); if (!comp) return;
   comp.cardUids.splice(idx, 1); comp.updatedAt = now();
   saveDebounced(); renderCompDetail(); renderCompPreview();
 }
 
 function addCardToComp(cardUid) {
+  if (!ensureStateWritable()) return;
   var comp = findComp(UI.selectedCompositionUid);
   if (!comp) { toast('Erst eine Komposition ausw\u00e4hlen'); return; }
   if (comp.cardUids.indexOf(cardUid) >= 0) { toast('Karte bereits enthalten'); return; }
@@ -1283,16 +1750,21 @@ function sanitizeBackupValue(value) {
   return value;
 }
 
-function buildBackupSnapshot() {
+function buildBackupSnapshotFromState(state) {
+  state = state || {};
   return sanitizeBackupValue({
-    cards: Array.isArray(S.cards) ? S.cards : [],
-    pairRelations: Array.isArray(S.pairRelations) ? S.pairRelations : [],
-    compositions: Array.isArray(S.compositions) ? S.compositions : [],
-    matrixSessions: Array.isArray(S.matrixSessions) ? S.matrixSessions : [],
-    deletedIds: S.deletedIds || {},
-    config: S.config || {},
-    _lastExported: S._lastExported || ''
+    cards: Array.isArray(state.cards) ? state.cards : [],
+    pairRelations: Array.isArray(state.pairRelations) ? state.pairRelations : [],
+    compositions: Array.isArray(state.compositions) ? state.compositions : [],
+    matrixSessions: Array.isArray(state.matrixSessions) ? state.matrixSessions : [],
+    deletedIds: state.deletedIds || {},
+    config: state.config || {},
+    _lastExported: state._lastExported || ''
   });
+}
+
+function buildBackupSnapshot() {
+  return buildBackupSnapshotFromState(S);
 }
 
 function buildCardByUid(cards) {
@@ -1367,8 +1839,8 @@ function buildBackupManifest(exportedIso, snapshot) {
   };
 }
 
-function buildBackupReadme(manifest) {
-  return [
+function buildBackupReadme(manifest, recoveryManifest) {
+  var lines = [
     '# Rilke ZIP-Backup',
     '',
     'Dies ist ein vollständiges Rilke ZIP-Backup.',
@@ -1382,7 +1854,11 @@ function buildBackupReadme(manifest) {
     '',
     'Exportiert: ' + manifest.exported,
     'Backup-Version: ' + manifest.backupVersion
-  ].join('\n');
+  ];
+  if (recoveryManifest && recoveryManifest.conflictCount > 0) {
+    lines.push('', '## Legacy-/IndexedDB-Konflikt', '', 'Dieses Backup wurde während eines Legacy-/IndexedDB-Konflikts erzeugt. `state/S.json` enthält den aktuell angezeigten IndexedDB-basierten Stand. Zusätzliche abweichende Legacy-Snapshots liegen unter `recovery/legacy-conflicts/`. Die Dateien wurden nicht automatisch zusammengeführt. Prüfe beide Seiten vor einer manuellen Wiederherstellung.');
+  }
+  return lines.join('\n');
 }
 
 function exportZipBackup() {
@@ -1396,9 +1872,31 @@ function exportZipBackup() {
     var zip = new JSZipLib();
     var usedCardNames = {};
     var usedCompNames = {};
+    var recoveryManifest = null;
+    if (_legacyConflictSnapshots.length > 0) {
+      recoveryManifest = {
+        schemaVersion: 'rilke-legacy-conflict-recovery-v1',
+        activeStatePath: 'state/S.json',
+        conflictCount: _legacyConflictSnapshots.length,
+        conflicts: []
+      };
+      _legacyConflictSnapshots.forEach(function(entry, index) {
+        var conflictSnapshot = buildBackupSnapshotFromState(entry.state);
+        var path = 'recovery/legacy-conflicts/legacy-' + String(index + 1).padStart(2, '0') + '-S.json';
+        recoveryManifest.conflicts.push({
+          path: path,
+          source: entry.source,
+          capturedAt: entry.capturedAt,
+          legacyTimestamp: entry.legacyTimestamp,
+          fingerprint: entry.fingerprint
+        });
+        zip.file(path, JSON.stringify(conflictSnapshot, null, 2));
+      });
+      zip.file('recovery/legacy-conflicts/manifest.json', JSON.stringify(recoveryManifest, null, 2));
+    }
 
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-    zip.file('README_BACKUP.md', buildBackupReadme(manifest));
+    zip.file('README_BACKUP.md', buildBackupReadme(manifest, recoveryManifest));
     zip.file('state/S.json', JSON.stringify(snapshot, null, 2));
     zip.file('state/cards.json', JSON.stringify(snapshot.cards, null, 2));
     zip.file('state/pairRelations.json', JSON.stringify(snapshot.pairRelations, null, 2));
@@ -1437,7 +1935,7 @@ function exportZipBackup() {
     toast('ZIP-Backup exportiert');
   }).catch(function(err) {
     console.warn('[ZIP Backup] Export fehlgeschlagen:', err);
-    toast('ZIP-Backup fehlgeschlagen');
+    toast(_legacyConflictSnapshots.length > 0 ? 'Recovery-ZIP konnte nicht vollständig erzeugt werden' : 'ZIP-Backup fehlgeschlagen');
   });
 }
 
@@ -1447,6 +1945,7 @@ function openEditCompModal(compUid) {
 }
 
 function doEditComp(compUid) {
+  if (!ensureStateWritable()) return;
   var comp = findComp(compUid); if (!comp) return;
   comp.title = $('m-title').value.trim() || comp.title; comp.updatedAt = now();
   saveDebounced(); closeModal(); renderComposition(); toast('Komposition gespeichert');
@@ -1458,6 +1957,7 @@ function confirmDeleteComp(compUid) {
 }
 
 function doDeleteComp(compUid) {
+  if (!ensureStateWritable()) return;
   S.compositions = S.compositions.filter(function(c){return c.uid!==compUid});
   if (UI.selectedCompositionUid === compUid) UI.selectedCompositionUid = '';
   saveDebounced(); closeModal(); renderComposition(); toast('Komposition gel\u00f6scht');
@@ -1467,11 +1967,58 @@ function doDeleteComp(compUid) {
    INIT
    ═══════════════════════════════════════════ */
 
-function init() { load(); switchTab('cards'); }
+async function init() {
+  document.body.classList.add('app-loading');
+  document.body.setAttribute('aria-busy', 'true');
+  await load();
+  switchTab('cards');
+  document.body.classList.remove('app-loading');
+  document.body.removeAttribute('aria-busy');
+  if (_storageReadOnly) toast('Speicherproblem: ZIP-Backup empfohlen.');
+}
 
 document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-init();
+window.addEventListener('storage', function(event) {
+  if (event.key !== LKEY || !event.newValue || !_persistenceReady) return;
+  var legacyState;
+  try {
+    legacyState = JSON.parse(event.newValue);
+  } catch(e) {
+    console.warn('Legacy-storage-Event konnte nicht geparst werden', e);
+    return;
+  }
+  if (!isPlausibleRilkeState(legacyState)) return;
+  if (areStatesEquivalent(S, legacyState)) return;
+  var legacyTs = getStateTimestamp(legacyState);
+  if (legacyTs === null && isKnownMigratedLegacyBaseline(legacyState)) return;
+  if (_activeStateTimestamp !== null && legacyTs !== null && legacyTs < _activeStateTimestamp) return;
+  if (_activeStateTimestamp === null || legacyTs === null) {
+    captureLegacyConflictSnapshot(legacyState, 'storage-event');
+    markLegacyConflict('Ein anderer älterer Rilke-Tab hat abweichende localStorage-Daten mit nicht eindeutig vergleichbarem Zeitstempel geschrieben. Bearbeitung wurde gesperrt.');
+    toast('Speicherkonflikt: Andere Rilke-Tabs schließen und neu laden.');
+    return;
+  }
+  if (legacyTs === _activeStateTimestamp) {
+    captureLegacyConflictSnapshot(legacyState, 'storage-event');
+    markLegacyConflict('Ein anderer älterer Rilke-Tab hat abweichende localStorage-Daten mit gleichem Zeitstempel geschrieben. Bearbeitung wurde gesperrt.');
+    toast('Speicherkonflikt: Andere Rilke-Tabs schließen und neu laden.');
+    return;
+  }
+  if (legacyTs > _activeStateTimestamp) {
+    captureLegacyConflictSnapshot(legacyState, 'storage-event');
+    markLegacyConflict('Ein anderer älterer Rilke-Tab hat neuere localStorage-Daten geschrieben. Bearbeitung wurde gesperrt.');
+    toast('Speicherkonflikt: Andere Rilke-Tabs schließen und neu laden.');
+  }
+});
+
+init().catch(function(e) {
+  handleStorageError('Rilke konnte nicht vollständig starten', e);
+  document.body.classList.remove('app-loading');
+  document.body.removeAttribute('aria-busy');
+  switchTab('cards');
+  toast('Startfehler: Speicher prüfen, ZIP-Backup empfohlen.');
+});
 </script>
 </body>
 </html>
