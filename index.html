@@ -265,6 +265,9 @@ var DB_NAME = 'rilke_db_v1';
 var DB_VERSION = 1;
 var DB_STORE_NAME = 'state';
 var DB_STATE_KEY = 'appState';
+var DEVICE_ID_KEY = 'rilke_device_id';
+var DEVICE_NAME_KEY = 'rilke_device_name';
+var LAST_SYNC_FINGERPRINT_KEY = 'rilke_last_sync_fingerprint';
 
 // ─── State ───
 function createDefaultState() {
@@ -312,6 +315,7 @@ function $(id) { return document.getElementById(id); }
 var _db = null;
 var _dbOpenPromise = null;
 var _writeQueue = Promise.resolve();
+var _syncInProgress = false;
 var _persistenceReady = false;
 var _storageBackend = 'starting';
 var _legacyMigratedThisSession = false;
@@ -386,6 +390,56 @@ function areStatesEquivalent(a, b) {
   }
 }
 
+function getDeviceId() {
+  var generated = '';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      var existing = String(localStorage.getItem(DEVICE_ID_KEY) || '').trim();
+      if (existing) return existing;
+      generated = uid();
+      localStorage.setItem(DEVICE_ID_KEY, generated);
+      return generated;
+    }
+  } catch(e) {
+    console.warn('Device-ID konnte nicht aus localStorage gelesen oder geschrieben werden', e);
+  }
+  return generated || uid();
+}
+
+function getDeviceName() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      var existing = String(localStorage.getItem(DEVICE_NAME_KEY) || '').trim();
+      if (existing) return existing;
+    }
+  } catch(e) {
+    console.warn('Device-Name konnte nicht aus localStorage gelesen werden', e);
+  }
+  return 'Gerät';
+}
+
+function rememberSyncFingerprint(state) {
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    var fingerprint = fingerprintComparableState(state || S);
+    localStorage.setItem(LAST_SYNC_FINGERPRINT_KEY, fingerprint);
+    return fingerprint;
+  } catch(e) {
+    console.warn('Sync-Fingerprint konnte nicht gespeichert werden', e);
+    return '';
+  }
+}
+
+function readSyncFingerprint() {
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    return String(localStorage.getItem(LAST_SYNC_FINGERPRINT_KEY) || '');
+  } catch(e) {
+    console.warn('Sync-Fingerprint konnte nicht gelesen werden', e);
+    return '';
+  }
+}
+
 function readLegacyMigrationMarker() {
   try {
     if (typeof localStorage === 'undefined') return null;
@@ -422,10 +476,14 @@ function isKnownMigratedLegacyBaseline(legacyState, marker) {
 
 function compareLegacyFreshness(idbState, legacyState, marker) {
   if (!isPlausibleRilkeState(legacyState)) return 'no-legacy';
-  if (areStatesEquivalent(idbState, legacyState)) return 'same';
   var idbTs = getStateTimestamp(idbState);
   var legacyTs = getStateTimestamp(legacyState);
-  if (legacyTs === null && isKnownMigratedLegacyBaseline(legacyState, marker)) return 'idb-newer';
+  if (areStatesEquivalent(idbState, legacyState)) {
+    if (idbTs !== null && legacyTs !== null && legacyTs > idbTs) return 'conflict';
+    return 'same';
+  }
+  var markerMatchesLegacy = isKnownMigratedLegacyBaseline(legacyState, marker);
+  if (markerMatchesLegacy && (legacyTs === null || (idbTs !== null && legacyTs !== null && idbTs >= legacyTs))) return 'idb-newer';
   if (idbTs !== null && legacyTs !== null && legacyTs < idbTs) return 'idb-newer';
   return 'conflict';
 }
@@ -773,6 +831,66 @@ function normalizeLoadedState() {
   return normalizeStateObject(S);
 }
 
+function pruneDeletedIds() {
+  var changed = normalizeStateObject(S, { silent: true });
+  var cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  var kept = {};
+  var invalidCount = 0;
+  Object.keys(S.deletedIds).forEach(function(id) {
+    var raw = S.deletedIds[id];
+    var parsed = (typeof raw === 'string' && raw.trim()) ? Date.parse(raw) : NaN;
+    if (isNaN(parsed)) {
+      kept[id] = raw;
+      invalidCount++;
+      return;
+    }
+    if (parsed < cutoff) {
+      changed = true;
+      return;
+    }
+    kept[id] = raw;
+  });
+  if (changed) S.deletedIds = kept;
+  if (invalidCount > 0) console.warn('Tombstone-Pruning hat ' + invalidCount + ' Tombstone(s) mit ungültigem Zeitpunkt defensiv behalten.');
+  return changed;
+}
+
+function gcOrphanRelations() {
+  var changed = normalizeStateObject(S, { silent: true });
+  var cardUids = {};
+  S.cards.forEach(function(card) {
+    if (card && card.uid) cardUids[card.uid] = true;
+  });
+  var gcTimestamp = now();
+  var removedWithoutUid = 0;
+  var kept = [];
+  S.pairRelations.forEach(function(rel) {
+    var fromUid = rel && rel.fromCardUid;
+    var toUid = rel && rel.toCardUid;
+    var orphan = !fromUid || !toUid || !!S.deletedIds[fromUid] || !!S.deletedIds[toUid] || !cardUids[fromUid] || !cardUids[toUid];
+    if (!orphan) {
+      kept.push(rel);
+      return;
+    }
+    changed = true;
+    if (rel && rel.uid) {
+      if (!S.deletedIds[rel.uid]) S.deletedIds[rel.uid] = gcTimestamp;
+    } else {
+      removedWithoutUid++;
+    }
+  });
+  if (changed) S.pairRelations = kept;
+  if (removedWithoutUid > 0) console.warn('Relation-GC hat ' + removedWithoutUid + ' verwaiste Relation(en) ohne verwendbare UID entfernt.');
+  return changed;
+}
+
+function runLocalRecoveryMaintenance() {
+  var changed = normalizeLoadedState();
+  changed = pruneDeletedIds() || changed;
+  changed = gcOrphanRelations() || changed;
+  return changed;
+}
+
 function getLegacyStateIfPlausible() {
   try {
     var d = localStorage.getItem(LKEY);
@@ -829,7 +947,8 @@ async function load() {
     }
 
     S = idbState;
-    if (normalizeLoadedState()) {
+    var idbMaintenanceChanged = runLocalRecoveryMaintenance();
+    if (idbMaintenanceChanged) {
       try {
         await enqueueStateWrite(cloneState(S));
       } catch(e) {
@@ -850,8 +969,9 @@ async function load() {
 
   var legacy = getLegacyStateIfPlausible();
   if (legacy) {
-    S = legacy;
-    normalizeLoadedState();
+    var rawLegacyBaseline = cloneState(legacy);
+    S = cloneState(legacy);
+    runLocalRecoveryMaintenance();
     try {
       await enqueueStateWrite(cloneState(S));
     } catch(e) {
@@ -863,8 +983,8 @@ async function load() {
       _persistenceReady = true;
       return;
     }
-    var markerWritten = writeLegacyMigrationMarker(legacy);
-    if (!markerWritten && getStateTimestamp(legacy) === null) {
+    var markerWritten = writeLegacyMigrationMarker(rawLegacyBaseline);
+    if (!markerWritten && getStateTimestamp(rawLegacyBaseline) === null) {
       handleStorageError('Die IndexedDB-Migration wurde geschrieben, aber der Legacy-Rollout-Marker konnte nicht gespeichert werden. Bearbeitung ist vorsorglich gesperrt; ZIP-Backup empfohlen.', new Error('Legacy-Migrationsmarker fehlt'));
       drainStartupLegacyWritesToRecovery(S, { includeCurrentLegacy: true, conservative: true });
       recordCommittedState(S);
@@ -882,7 +1002,7 @@ async function load() {
   }
 
   S = createDefaultState();
-  normalizeLoadedState();
+  runLocalRecoveryMaintenance();
   try {
     await enqueueStateWrite(cloneState(S));
   } catch(e) {
@@ -905,7 +1025,7 @@ function save() {
     failed.catch(notifySaveError);
     return failed;
   }
-  S._lastExported = now();
+  if (!_syncInProgress) S._lastExported = now();
   var snapshot = cloneState(S);
   var op = enqueueStateWrite(snapshot);
   op.then(function() {
@@ -2020,6 +2140,13 @@ function buildBackupReadme(manifest, recoveryManifest) {
     lines.push('', '## Legacy-/IndexedDB-Konflikt', '', 'Dieses Backup wurde während eines Legacy-/IndexedDB-Konflikts erzeugt. `state/S.json` enthält den aktuell angezeigten IndexedDB-basierten Stand. Zusätzliche abweichende Legacy-Snapshots liegen unter `recovery/legacy-conflicts/`. Die Dateien wurden nicht automatisch zusammengeführt. Prüfe beide Seiten vor einer manuellen Wiederherstellung.');
   }
   return lines.join('\n');
+}
+
+function recommendRecoveryZipBeforeRisk(reason) {
+  var label = String(reason || 'riskante Operation').trim() || 'riskante Operation';
+  var message = 'Empfehlung: Recovery-ZIP erstellen vor: ' + label;
+  console.info(message);
+  if (typeof toast === 'function') toast(message);
 }
 
 function exportZipBackup() {
