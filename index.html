@@ -268,6 +268,15 @@ var DB_STATE_KEY = 'appState';
 var DEVICE_ID_KEY = 'rilke_device_id';
 var DEVICE_NAME_KEY = 'rilke_device_name';
 var LAST_SYNC_FINGERPRINT_KEY = 'rilke_last_sync_fingerprint';
+var GIST_TOKEN_KEY = 'rilke_gist_token';
+var GIST_ID_KEY = 'rilke_gist_id';
+var SYNC_PASSPHRASE_KEY = 'rilke_sync_passphrase';
+var SYNC_PASSPHRASE_REMEMBER_KEY = 'rilke_sync_passphrase_remember';
+var GIST_FILE = 'rilke-encrypted-v1.json';
+var SYNC_ENVELOPE_FORMAT = 'rilke-encrypted-v1';
+var SYNC_PAYLOAD_FORMAT = 'rilke-sync-v1';
+var SYNC_VERSION = 1;
+var PBKDF2_ITERATIONS = 250000;
 
 // ─── State ───
 function createDefaultState() {
@@ -329,6 +338,7 @@ var _lastStorageError = null;
 var _storageReadOnly = false;
 var _storageWriteError = false;
 var _lastSaveErrorToastAt = 0;
+var _syncPassphraseSession = '';
 
 function isPlausibleRilkeState(value) {
   return !!(value && typeof value === 'object' && Array.isArray(value.cards));
@@ -847,6 +857,7 @@ function isStateWritable() {
 }
 
 function ensureStateWritable() {
+  if (_syncInProgress) { toast('Sync läuft – Änderungen sind kurzzeitig gesperrt.'); return false; }
   if (isStateWritable()) return true;
   toast('Nur-Lese-Modus: Bitte ZIP-Backup exportieren und das Speicherproblem beheben.');
   return false;
@@ -918,31 +929,32 @@ function pruneDeletedIds() {
   return changed;
 }
 
-function gcOrphanRelations() {
-  var changed = normalizeStateObject(S, { silent: true });
+function gcOrphanRelations(targetState) {
+  var T = targetState || S;
+  var changed = normalizeStateObject(T, { silent: true });
   var cardUids = {};
-  S.cards.forEach(function(card) {
+  T.cards.forEach(function(card) {
     if (card && card.uid) cardUids[card.uid] = true;
   });
   var gcTimestamp = now();
   var removedWithoutUid = 0;
   var kept = [];
-  S.pairRelations.forEach(function(rel) {
+  T.pairRelations.forEach(function(rel) {
     var fromUid = rel && rel.fromCardUid;
     var toUid = rel && rel.toCardUid;
-    var orphan = !fromUid || !toUid || !!S.deletedIds[fromUid] || !!S.deletedIds[toUid] || !cardUids[fromUid] || !cardUids[toUid];
+    var orphan = !fromUid || !toUid || !!T.deletedIds[fromUid] || !!T.deletedIds[toUid] || !cardUids[fromUid] || !cardUids[toUid];
     if (!orphan) {
       kept.push(rel);
       return;
     }
     changed = true;
     if (rel && rel.uid) {
-      if (!S.deletedIds[rel.uid]) S.deletedIds[rel.uid] = gcTimestamp;
+      if (!T.deletedIds[rel.uid]) T.deletedIds[rel.uid] = gcTimestamp;
     } else {
       removedWithoutUid++;
     }
   });
-  if (changed) S.pairRelations = kept;
+  if (changed) T.pairRelations = kept;
   if (removedWithoutUid > 0) console.warn('Relation-GC hat ' + removedWithoutUid + ' verwaiste Relation(en) ohne verwendbare UID entfernt.');
   return changed;
 }
@@ -1112,7 +1124,7 @@ function save() {
   return op;
 }
 var _saveTimer = null;
-function saveDebounced() { clearTimeout(_saveTimer); _saveTimer = setTimeout(function(){ save(); }, 400); }
+function saveDebounced() { if (_syncInProgress) { toast('Sync läuft – Änderungen sind kurzzeitig gesperrt.'); return; } clearTimeout(_saveTimer); _saveTimer = setTimeout(function(){ save(); }, 400); }
 
 // ─── Card helpers ───
 function findCard(u) { return S.cards.find(function(c){return c.uid===u}); }
@@ -1417,9 +1429,90 @@ function openSettingsModal() {
       '<button class="btn" onclick="exportZipBackup()">⬇ ZIP-Backup exportieren</button>' +
       '<div class="detail-meta" style="margin-top:6px">Exportiert vollständigen State plus einzelne Markdown-Zettel. App-Zugangsdaten aus Einstellungen werden nicht exportiert; Kartentexte und Kommentare bleiben unverändert enthalten.</div>' +
     '</div>' +
+    '<div class="field">' +
+      '<div class="detail-label">Verschlüsselter Gist-Sync</div>' +
+      '<div class="storage-mode-card">' +
+        '<div class="field"><label for="sync-gist-id">Gist-ID</label><input id="sync-gist-id" autocomplete="off" value="' + esc(readLocalValue(GIST_ID_KEY)) + '"></div>' +
+        '<div class="field"><label for="sync-gist-token">GitHub-Token</label><input id="sync-gist-token" type="password" autocomplete="off" value="' + esc(readLocalValue(GIST_TOKEN_KEY)) + '"></div>' +
+        '<div class="field"><label for="sync-passphrase">Passphrase</label><input id="sync-passphrase" type="password" autocomplete="new-password" value="' + esc(getSyncPassphrase()) + '"></div>' +
+        '<label style="display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:.85rem;color:var(--ink-light)"><input id="sync-passphrase-remember" type="checkbox" ' + (readLocalValue(SYNC_PASSPHRASE_REMEMBER_KEY)==='1'?'checked':'') + '> Passphrase auf diesem Gerät merken</label>' +
+        '<div class="field"><label for="sync-device-name">Gerätename</label><input id="sync-device-name" autocomplete="off" value="' + esc(getDeviceName()) + '"></div>' +
+        '<div class="btn-group"><button class="btn" onclick="saveGistSyncSettings()" ' + (_syncInProgress?'disabled':'') + '>Sync-Einstellungen speichern</button><button class="btn btn-accent" onclick="if (saveGistSyncSettings()) gistSyncManual()" ' + (_syncInProgress?'disabled':'') + '>Sync jetzt</button></div>' +
+        '<div class="detail-meta" style="margin-top:8px">Manueller Sync in die verschlüsselte Gist-Datei ' + esc(GIST_FILE) + '. Kein Auto-Sync.</div>' +
+      '</div>' +
+    '</div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Schließen</button></div>'
   );
 }
+
+
+
+// ─── Encrypted Gist Sync MVP ───
+function syncFail(phase, msg) { var e = new Error('[' + phase + '] ' + msg); e.phase = phase; throw e; }
+function readLocalValue(key) { try { return typeof localStorage === 'undefined' ? '' : String(localStorage.getItem(key) || ''); } catch(e) { return ''; } }
+function writeLocalValue(key, value) { try { if (typeof localStorage !== 'undefined') localStorage.setItem(key, value || ''); } catch(e) { syncFail('Konfiguration', 'Einstellung konnte lokal nicht gespeichert werden.'); } }
+function removeLocalValue(key) { try { if (typeof localStorage !== 'undefined') localStorage.removeItem(key); } catch(e) {} }
+function getSyncPassphrase() { return readLocalValue(SYNC_PASSPHRASE_REMEMBER_KEY) === '1' ? readLocalValue(SYNC_PASSPHRASE_KEY) : _syncPassphraseSession; }
+function saveGistSyncSettings() {
+  if (_syncInProgress) { toast('Sync läuft – Einstellungen sind kurzzeitig gesperrt.'); return false; }
+  var previousGistId = readLocalValue(GIST_ID_KEY).trim();
+  var gistId = ($('sync-gist-id') && $('sync-gist-id').value || '').trim();
+  var token = ($('sync-gist-token') && $('sync-gist-token').value || '').trim();
+  var passphrase = ($('sync-passphrase') && $('sync-passphrase').value || '');
+  var remember = !!($('sync-passphrase-remember') && $('sync-passphrase-remember').checked);
+  var deviceName = ($('sync-device-name') && $('sync-device-name').value || '').trim();
+  writeLocalValue(GIST_ID_KEY, gistId); writeLocalValue(GIST_TOKEN_KEY, token);
+  if (previousGistId !== gistId) removeLocalValue(LAST_SYNC_FINGERPRINT_KEY);
+  if (deviceName) writeLocalValue(DEVICE_NAME_KEY, deviceName);
+  writeLocalValue(SYNC_PASSPHRASE_REMEMBER_KEY, remember ? '1' : '0');
+  if (remember) writeLocalValue(SYNC_PASSPHRASE_KEY, passphrase); else { _syncPassphraseSession = passphrase; removeLocalValue(SYNC_PASSPHRASE_KEY); }
+  toast('Sync-Einstellungen gespeichert');
+  return true;
+}
+function bytesToBase64(bytes) { var bin=''; for (var i=0;i<bytes.length;i+=0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000)); return btoa(bin); }
+function base64ToBytes(s) { try { var bin=atob(String(s||'')); var out=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; } catch(e) { syncFail('Entschlüsselung','Ungültige Base64-Daten.'); } }
+async function deriveSyncKey(passphrase, salt) { var base=await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:PBKDF2_ITERATIONS,hash:'SHA-256'}, base, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']); }
+async function encryptSyncPayload(payload, passphrase) { var salt=crypto.getRandomValues(new Uint8Array(16)); var iv=crypto.getRandomValues(new Uint8Array(12)); var key=await deriveSyncKey(passphrase,salt); var pt=new TextEncoder().encode(JSON.stringify(payload)); var ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,pt)); return {format:SYNC_ENVELOPE_FORMAT,version:1,kdf:{name:'PBKDF2',hash:'SHA-256',iterations:PBKDF2_ITERATIONS,salt:bytesToBase64(salt)},cipher:{name:'AES-GCM',iv:bytesToBase64(iv)},ciphertext:bytesToBase64(ct)}; }
+async function decryptSyncEnvelopeText(text, passphrase) { var env; try { env=JSON.parse(text); } catch(e){ syncFail('Entschlüsselung','Gist-Datei enthält kein gültiges Envelope-JSON.'); } if(!env||env.format!==SYNC_ENVELOPE_FORMAT||env.version!==1) syncFail('Entschlüsselung','Unbekanntes Envelope-Format oder Version.'); if(!env.kdf||env.kdf.name!=='PBKDF2'||env.kdf.hash!=='SHA-256'||env.kdf.iterations!==PBKDF2_ITERATIONS||!env.cipher||env.cipher.name!=='AES-GCM') syncFail('Entschlüsselung','Ungültige Krypto-Parameter.'); var salt=base64ToBytes(env.kdf.salt), iv=base64ToBytes(env.cipher.iv), ct=base64ToBytes(env.ciphertext); if(salt.length<16||iv.length!==12||!ct.length) syncFail('Entschlüsselung','Ungültiger Salt, IV oder Ciphertext.'); try { var key=await deriveSyncKey(passphrase,salt); var pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},key,ct); return JSON.parse(new TextDecoder().decode(pt)); } catch(e){ syncFail('Entschlüsselung','Entschlüsselung fehlgeschlagen. Passphrase prüfen.'); } }
+function buildRilkeSyncState(state) { state=state||{}; var cfg=state.config||{}; return {cards:cloneState(Array.isArray(state.cards)?state.cards:[]),pairRelations:cloneState(Array.isArray(state.pairRelations)?state.pairRelations:[]),compositions:cloneState(Array.isArray(state.compositions)?state.compositions:[]),deletedIds:cloneState(state.deletedIds&&typeof state.deletedIds==='object'&&!Array.isArray(state.deletedIds)?state.deletedIds:{}),config:{appName:cfg.appName||'Rilke',matrixCols:cfg.matrixCols||5,matrixRows:cfg.matrixRows||4,exportMode:cfg.exportMode||'plain',storageMode:'local'}}; }
+function buildRilkeSyncComparableState(state) { return buildRilkeSyncState(state); }
+function uniqueFingerprintList(values, exclude){ var seen={}; var out=[]; (values||[]).forEach(function(v){ v=String(v||'').trim(); if(!v||v===exclude||seen[v]) return; seen[v]=true; out.push(v); }); return out; }
+function buildSyncMetaForState(state, options){ options=options||{}; var fp=fingerprintComparableState(buildRilkeSyncComparableState(state)); return {stateFingerprint:fp,parentFingerprints:uniqueFingerprintList(options.parentFingerprints, fp),ancestorFingerprints:uniqueFingerprintList(options.ancestorFingerprints, fp).slice(-64)}; }
+function buildRilkeSyncPayload(state, syncTs, metaOptions) { var syncState=buildRilkeSyncState(state); return {format:SYNC_PAYLOAD_FORMAT,syncVersion:SYNC_VERSION,exported:syncTs,device:{id:getDeviceId(),name:getDeviceName()},syncMeta:buildSyncMetaForState(syncState, metaOptions || {}),state:syncState}; }
+function hasMeaningfulSyncContent(st){ st=buildRilkeSyncState(st); return st.cards.length||st.pairRelations.length||st.compositions.length||Object.keys(st.deletedIds).length; }
+function isSemanticallyEmptySyncState(state){ return !hasMeaningfulSyncContent(state); }
+function validateSyncMeta(meta, expectedFp){ if(!meta) return null; if(!meta||typeof meta!=='object'||Array.isArray(meta)) syncFail('Payload-Validierung','syncMeta ist kein Objekt.'); if(String(meta.stateFingerprint||'')!==expectedFp) syncFail('Payload-Validierung','syncMeta.stateFingerprint passt nicht zum State.'); function cleanList(name){ if(!Array.isArray(meta[name])) syncFail('Payload-Validierung',name+' ist kein Array.'); var out=uniqueFingerprintList(meta[name], ''); if(out.length!==meta[name].length) syncFail('Payload-Validierung',name+' enthält leere oder doppelte Werte.'); return out.slice(-64); } return {stateFingerprint:expectedFp,parentFingerprints:cleanList('parentFingerprints'),ancestorFingerprints:cleanList('ancestorFingerprints')}; }
+function remoteIncludesFingerprint(remote, fingerprint){ fingerprint=String(fingerprint||'').trim(); if(!remote||!fingerprint) return false; if(remote.fingerprint===fingerprint) return true; var meta=remote.syncMeta; if(!meta) return false; return (meta.parentFingerprints||[]).indexOf(fingerprint)!==-1 || (meta.ancestorFingerprints||[]).indexOf(fingerprint)!==-1; }
+function lineageForWrite(remote, localFingerprint, lastFingerprint, mode){ var parents=[]; var ancestors=[]; if(remote&&remote.initialized&&remote.fingerprint){ parents.push(remote.fingerprint); ancestors=ancestors.concat(remote.syncMeta&&remote.syncMeta.ancestorFingerprints||[], [remote.fingerprint]); } if(mode==='merge'&&localFingerprint){ parents.push(localFingerprint); ancestors.push(localFingerprint); } if(mode==='merge'&&lastFingerprint) ancestors.push(lastFingerprint); return {parentFingerprints:uniqueFingerprintList(parents),ancestorFingerprints:uniqueFingerprintList(ancestors).slice(-64)}; }
+function assertNoCredentialKeys(obj, path){ if(Array.isArray(obj)){ obj.forEach(function(v,i){assertNoCredentialKeys(v,path+'['+i+']')}); return;} if(obj&&typeof obj==='object'){ Object.keys(obj).forEach(function(k){ if(isCredentialKey(k)) syncFail('Payload-Validierung','Credential-ähnlicher Schlüssel im Remote-State: '+k); assertNoCredentialKeys(obj[k],path+'.'+k); }); } }
+function validIso(s){ return typeof s==='string' && !isNaN(Date.parse(s)); }
+function validateSyncPayload(payload){ if(!payload||typeof payload!=='object'||Array.isArray(payload)) syncFail('Payload-Validierung','Payload ist kein Objekt.'); if(payload.format!==SYNC_PAYLOAD_FORMAT) syncFail('Payload-Validierung','Falsches Payload-Format.'); if(!Number.isInteger(payload.syncVersion)) syncFail('Payload-Validierung','syncVersion fehlt oder ist ungültig.'); if(payload.syncVersion>SYNC_VERSION) syncFail('Payload-Validierung','Eine neuere Rilke-Version hat diesen Gist geschrieben.'); if(payload.syncVersion!==SYNC_VERSION) syncFail('Payload-Validierung','Nicht unterstützte syncVersion.'); var st=payload.state; if(!st||typeof st!=='object'||Array.isArray(st)) syncFail('Payload-Validierung','state ist kein Objekt.'); assertNoCredentialKeys(st,'state'); ['cards','pairRelations','compositions'].forEach(function(k){ if(!Array.isArray(st[k])) syncFail('Payload-Validierung',k+' ist kein Array.'); }); if(!st.deletedIds||typeof st.deletedIds!=='object'||Array.isArray(st.deletedIds)) syncFail('Payload-Validierung','deletedIds ist kein Objekt.'); if(!st.config||typeof st.config!=='object'||Array.isArray(st.config)) syncFail('Payload-Validierung','config ist kein Objekt.'); Object.keys(st.deletedIds).forEach(function(k){ if(!validIso(st.deletedIds[k])) syncFail('Payload-Validierung','Ungültiger Tombstone für '+k); }); function unique(arr,name,check){ var seen={}; arr.forEach(function(x){ if(!x||typeof x!=='object'||!String(x.uid||'').trim()) syncFail('Payload-Validierung',name+' ohne UID.'); if(seen[x.uid]) syncFail('Payload-Validierung','Doppelte UID in '+name+': '+x.uid); seen[x.uid]=true; if(check) check(x); }); } unique(st.cards,'cards'); unique(st.pairRelations,'pairRelations',function(r){ if(!String(r.fromCardUid||'').trim()||!String(r.toCardUid||'').trim()) syncFail('Payload-Validierung','Relation ohne verwendbare Kartenreferenzen.'); }); unique(st.compositions,'compositions',function(c){ if(!Array.isArray(c.cardUids)) syncFail('Payload-Validierung','Komposition ohne cardUids-Array.'); }); var clean={cards:cloneState(st.cards),pairRelations:cloneState(st.pairRelations),compositions:cloneState(st.compositions),deletedIds:cloneState(st.deletedIds),config:{}}; ['appName','matrixCols','matrixRows','exportMode','storageMode'].forEach(function(k){ if(st.config[k]!==undefined) clean.config[k]=st.config[k]; }); var full=createDefaultState(); Object.assign(full, clean); normalizeStateObject(full,{silent:true}); var expectedFp=fingerprintComparableState(buildRilkeSyncComparableState(full)); full._syncMeta = validateSyncMeta(payload.syncMeta, expectedFp); return full; }
+function isUninitializedGistText(text){ return text===null||text===undefined||String(text).trim()===''||String(text).trim()==='{}'; }
+function githubHeaders(token, includeContentType){ var h={Authorization:'token '+token,Accept:'application/vnd.github+json'}; if(includeContentType) h['Content-Type']='application/json'; return h; }
+function gistApiUrl(gistId){ return 'https://api.github.com/gists/'+encodeURIComponent(gistId); }
+async function fetchJsonPhase(url, opts, phase){ var res; try{ res=await fetch(url,opts); }catch(e){ syncFail(phase,'Netzwerkfehler.'); } if(res.status===401||res.status===403) syncFail(phase,'GitHub verweigert Zugriff (401/403).'); if(res.status===404) syncFail(phase,'Gist nicht gefunden (404).'); if(!res.ok) syncFail(phase,'GitHub HTTP '+res.status+'.'); var json; try{json=await res.json();}catch(e){syncFail(phase,'Ungültiges GitHub-JSON.');} json._etag = res.headers && res.headers.get ? res.headers.get('ETag') : ''; json._lastModified = res.headers && res.headers.get ? res.headers.get('Last-Modified') : ''; return json; }
+async function getFullGistFileText(file, token){ if(!file) return {exists:false,text:null}; if(file.truncated!==true && typeof file.content==='string') return {exists:true,text:file.content}; if(!file.raw_url) syncFail('Raw-Read','Gist-Datei ist unvollständig und raw_url fehlt.'); var res; try{res=await fetch(file.raw_url,{method:'GET',headers:githubHeaders(token,false)});}catch(e){syncFail('Raw-Read','Netzwerkfehler beim Raw-Read.');} if(!res.ok) syncFail('Raw-Read','Raw-Read HTTP '+res.status+'.'); return {exists:true,text:await res.text()}; }
+async function readRemoteSync(gistId, token, passphrase){ var gist=await fetchJsonPhase(gistApiUrl(gistId),{method:'GET',headers:githubHeaders(token,false)},'Remote-GET'); if(!gist||!gist.files||typeof gist.files!=='object') syncFail('Remote-GET','Unerwartete Gist-Struktur.'); var full=await getFullGistFileText(gist.files[GIST_FILE],token); if(!full.exists||isUninitializedGistText(full.text)) return {exists:full.exists,text:full.text,initialized:false,state:null,fingerprint:'',etag:gist._etag||'',lastModified:gist._lastModified||''}; var payload=await decryptSyncEnvelopeText(full.text,passphrase); var state=validateSyncPayload(payload); return {exists:true,text:full.text,initialized:true,state:state,fingerprint:fingerprintComparableState(buildRilkeSyncComparableState(state)),syncMeta:state._syncMeta,etag:gist._etag||'',lastModified:gist._lastModified||''}; }
+function getObjectFreshness(item){ if(item&&validIso(item.updatedAt)) return Date.parse(item.updatedAt); if(item&&validIso(item.createdAt)) return Date.parse(item.createdAt); return null; }
+function validateLocalTombstones() { var d = S && S.deletedIds; if (!d || typeof d !== 'object' || Array.isArray(d)) return; Object.keys(d).forEach(function(k){ if (!validIso(d[k])) syncFail('Payload-Validierung','Ungültiger lokaler Tombstone für '+k+'. Bitte lokale Daten bereinigen oder Recovery nutzen.'); }); }
+function mergeDeletedIds(a,b){ var out=cloneState(a||{}); Object.keys(out).forEach(function(k){ if(!validIso(out[k])) syncFail('Merge','Ungültiger lokaler Tombstone für '+k+'.'); }); Object.keys(b||{}).forEach(function(k){ if(!validIso(b[k])) syncFail('Merge','Ungültiger Remote-Tombstone für '+k+'.'); if(!out[k] || Date.parse(b[k])>Date.parse(out[k])) out[k]=b[k]; }); return out; }
+function chooseArchivedRecoveryVersion(local, remote) { var candidates=[local,remote].filter(Boolean); var archived=candidates.filter(function(x){return x.status==='archived';}); var pool=archived.length?archived:candidates; pool.sort(function(a,b){ var af=getObjectFreshness(a), bf=getObjectFreshness(b); if(af===null&&bf===null) return 0; if(af===null) return 1; if(bf===null) return -1; return bf-af; }); var chosen=cloneState(pool[0] || local || remote); chosen.status='archived'; return chosen; }
+function applyMergedTombstone(local, remote, tombstoneTs, type) { [local,remote].forEach(function(x){ var f=getObjectFreshness(x); if(f!==null && f>Date.parse(tombstoneTs)) syncFail('Merge','Delete-vs-Edit-Konflikt: '+x.uid); }); if(type==='cards') return chooseArchivedRecoveryVersion(local, remote); return null; }
+function entityMap(arr){ var m={}; (arr||[]).forEach(function(x){ if(x&&x.uid)m[x.uid]=x; }); return m; }
+function mergeObjects(local, remote, type){ if(stableStringify(local)===stableStringify(remote)) return cloneState(local); if(type==='cards') syncFail('Merge','Beidseitig divergierende Karte blockiert: '+(local.uid||remote.uid)); var lf=getObjectFreshness(local), rf=getObjectFreshness(remote); if(lf===null||rf===null||lf===rf) syncFail('Merge','Divergentes Objekt ohne eindeutige Freshness blockiert: '+(local.uid||remote.uid)); return cloneState(lf>rf?local:remote); }
+function mergeEntityArray(localArr, remoteArr, deletedIds, type){ var lm=entityMap(localArr), rm=entityMap(remoteArr), ids={}; Object.keys(lm).forEach(function(k){ids[k]=1}); Object.keys(rm).forEach(function(k){ids[k]=1}); var out=[]; Object.keys(ids).forEach(function(id){ var ts=deletedIds&&deletedIds[id]; if(ts){ var recovered=applyMergedTombstone(lm[id],rm[id],ts,type); if(recovered) out.push(recovered); return; } var item=lm[id]&&rm[id]?mergeObjects(lm[id],rm[id],type):cloneState(lm[id]||rm[id]); out.push(item); }); return out; }
+function materializeLocalStateFromSyncState(localBase, syncedState, options){ options=options||{}; var base=cloneState(localBase||createDefaultState()); var sync=buildRilkeSyncState(syncedState||{}); base.cards=cloneState(sync.cards); base.pairRelations=cloneState(sync.pairRelations); base.compositions=cloneState(sync.compositions); base.deletedIds=cloneState(sync.deletedIds); var localConfig=base.config&&typeof base.config==='object'&&!Array.isArray(base.config)?base.config:{}; var syncConfig=sync.config||{}; var allow=['appName','matrixCols','matrixRows','exportMode','storageMode']; if(options.configMode==='remote'){ allow.forEach(function(k){ if(syncConfig[k]!==undefined) localConfig[k]=syncConfig[k]; }); } else { /* Zwei-Wege-Merge: allowlistete Config bleibt lokal gemäß MVP-Vertrag. */ allow.forEach(function(k){ if(localConfig[k]===undefined && syncConfig[k]!==undefined) localConfig[k]=syncConfig[k]; }); } base.config=localConfig; return base; }
+function mergeSyncStates(local, remote){ var c=createDefaultState(); c.deletedIds=mergeDeletedIds(local.deletedIds,remote.deletedIds); c.cards=mergeEntityArray(local.cards,remote.cards,c.deletedIds,'cards'); c.pairRelations=mergeEntityArray(local.pairRelations,remote.pairRelations,c.deletedIds,'pairRelations'); c.compositions=mergeEntityArray(local.compositions,remote.compositions,c.deletedIds,'compositions'); c.config=buildRilkeSyncState(local).config; normalizeStateObject(c,{silent:true}); gcOrphanRelations(c); return c; }
+async function persistCandidateState(candidate, phase){ var snap=cloneState(candidate); snap._lastExported = now(); await enqueueStateWrite(snap).catch(function(e){ syncFail(phase,'IndexedDB-Write fehlgeschlagen.'); }); S=snap; recordCommittedState(snap); switchTab(UI.tab); }
+async function rollbackLocal(pre){ try{ await enqueueStateWrite(cloneState(pre)); S=cloneState(pre); recordCommittedState(S); switchTab(UI.tab); return true; }catch(e){ notifySaveError(e); recommendRecoveryZipBeforeRisk('Rollback fehlgeschlagen'); return false; } }
+async function preflightRecheck(original, gistId, token, passphrase){ var latest=await readRemoteSync(gistId,token,passphrase); /* Preflight verkleinert nur das Race-Fenster; er ist kein atomarer Schreibschutz. */ if((original.exists!==latest.exists)||(String(original.text||'')!==String(latest.text||''))||(String(original.etag||'')!==String(latest.etag||''))) syncFail('Preflight-Recheck','Konkurrierender Remote-Write erkannt. Bitte Sync erneut starten.'); return latest; }
+async function patchRemote(gistId, token, content){ var body={files:{}}; body.files[GIST_FILE]={content:content}; await fetchJsonPhase(gistApiUrl(gistId),{method:'PATCH',headers:githubHeaders(token,true),body:JSON.stringify(body)},'Remote-PATCH'); }
+async function readbackVerify(expectedState, gistId, token, passphrase){ var rb=await readRemoteSync(gistId,token,passphrase); if(!rb.initialized) syncFail('Readback-Verify','Zurückgelesene Datei ist nicht initialisiert.'); if(stableStringify(buildRilkeSyncComparableState(expectedState))!==stableStringify(buildRilkeSyncComparableState(rb.state))) syncFail('Readback-Verify','Zurückgelesener State weicht ab.'); }
+function syncStabilizationDelay(){ return new Promise(function(resolve){ setTimeout(resolve, 1000); }); }
+async function writeWithVerify(finalState, originalRemote, gistId, token, passphrase, lineageOptions){ if(originalRemote.initialized && stableStringify(buildRilkeSyncComparableState(finalState))===stableStringify(buildRilkeSyncComparableState(originalRemote.state))) return {kind:'noop',baselineState:finalState,baselineFingerprint:fingerprintComparableState(buildRilkeSyncComparableState(finalState))}; var expectedFp=fingerprintComparableState(buildRilkeSyncComparableState(finalState)); var payload=buildRilkeSyncPayload(finalState, now(), lineageOptions || {}); var env=await encryptSyncPayload(payload,passphrase); var text=JSON.stringify(env,null,2); var rechecked=await preflightRecheck(originalRemote,gistId,token,passphrase); if(rechecked.initialized && stableStringify(buildRilkeSyncComparableState(finalState))===stableStringify(buildRilkeSyncComparableState(rechecked.state))) return {kind:'noop',baselineState:finalState,baselineFingerprint:expectedFp}; await patchRemote(gistId,token,text); try{ await readbackVerify(finalState,gistId,token,passphrase); }catch(e){ var cur=await readRemoteSync(gistId,token,passphrase).catch(function(){return null}); if(cur&&cur.text===text&&originalRemote.exists&&originalRemote.text!==undefined&&originalRemote.text!==null){ await patchRemote(gistId,token,originalRemote.text).catch(function(){ syncFail('Rollback','Best-Effort-Remote-Rollback unvollständig nach Readback-Fehler.'); }); var rb=await readRemoteSync(gistId,token,passphrase).catch(function(){return null}); if(!rb||String(rb.text||'')!==String(originalRemote.text||'')) syncFail('Rollback','Best-Effort-Remote-Rollback konnte nicht verifiziert werden.'); } throw e; } await syncStabilizationDelay(); var stable=await readRemoteSync(gistId,token,passphrase); if(stable.initialized && stable.fingerprint===expectedFp) return {kind:'written',baselineState:finalState,baselineFingerprint:expectedFp}; if(stable.initialized && remoteIncludesFingerprint(stable, expectedFp)) return {kind:'successor',remote:stable,baselineState:stable.state,baselineFingerprint:stable.fingerprint}; if(stable.initialized){ var mergedSync=mergeSyncStates(finalState, stable.state); return {kind:'sibling',remote:stable,mergedSync:mergedSync,baselineFingerprint:stable.fingerprint}; } syncFail('Readback-Verify','Post-Write-Stabilisierung fand keinen initialisierten Remote-State.'); }
+async function gistSyncManual(){ if(_syncInProgress){ toast('Sync läuft bereits'); return; } _syncInProgress=true; try{ if(!isStateWritable()) syncFail('Konfiguration','Lokaler Speicher ist Readonly/Notfallmodus; Sync blockiert.'); var token=readLocalValue(GIST_TOKEN_KEY).trim(), gistId=readLocalValue(GIST_ID_KEY).trim(), passphrase=getSyncPassphrase(); if(!token) syncFail('Konfiguration','GitHub-Token fehlt.'); if(!gistId) syncFail('Konfiguration','Gist-ID fehlt.'); if(!passphrase) syncFail('Konfiguration','Passphrase fehlt.'); if(!window.crypto||!crypto.subtle) syncFail('Konfiguration','WebCrypto ist nicht verfügbar.'); validateLocalTombstones(); if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; await save(); } await _writeQueue; var maintenanceCandidate=cloneState(S); gcOrphanRelations(maintenanceCandidate); if(stableStringify(stateComparableSnapshot(maintenanceCandidate))!==stableStringify(stateComparableSnapshot(S))) await persistCandidateState(maintenanceCandidate,'lokales Persistieren'); var last=readSyncFingerprint(); var remote=await readRemoteSync(gistId,token,passphrase); await _writeQueue; var localSnapshot=cloneState(S); var pre=cloneState(localSnapshot); var localSync=buildRilkeSyncComparableState(localSnapshot); var localFp=fingerprintComparableState(localSync); var result='No-Op'; if(!last){ if(!remote.initialized){ if(hasMeaningfulSyncContent(localSnapshot)){ var uploadSnapshot=cloneState(localSnapshot); result=await writeWithVerify(uploadSnapshot,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var succ=materializeLocalStateFromSyncState(localSnapshot,result.remote.state,{configMode:'remote'}); await persistCandidateState(succ,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(succ)); toast('Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.'); } else if(result.kind==='sibling'){ var sib=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); await persistCandidateState(sib,'lokales Persistieren'); rememberSyncFingerprint(result.remote.fingerprint); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberSyncFingerprint(buildRilkeSyncComparableState(uploadSnapshot)); toast('Sync: Lokal hochgeladen'); } } else { rememberSyncFingerprint(localSync); toast('Sync: No-Op (leer)'); } return; } if(stableStringify(localSync)===stableStringify(buildRilkeSyncComparableState(remote.state))){ rememberSyncFingerprint(localSync); toast('Sync: No-Op, Baseline gespeichert'); return; } if(isSemanticallyEmptySyncState(remote.state)&&hasMeaningfulSyncContent(localSnapshot)){ var emptyUpload=cloneState(localSnapshot); result=await writeWithVerify(emptyUpload,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); rememberSyncFingerprint(buildRilkeSyncComparableState(emptyUpload)); toast('Sync: Lokal hochgeladen'); return; } if(isSemanticallyEmptySyncState(localSnapshot)&&isSemanticallyEmptySyncState(remote.state)){ var emptyCand=materializeLocalStateFromSyncState(localSnapshot, remote.state, { configMode:'remote' }); await persistCandidateState(emptyCand,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(emptyCand)); toast('Sync: No-Op, Remote-Config übernommen'); return; } if(!hasMeaningfulSyncContent(localSnapshot)&&hasMeaningfulSyncContent(remote.state)){ recommendRecoveryZipBeforeRisk('Remote-Erstübernahme'); var cand=materializeLocalStateFromSyncState(localSnapshot, remote.state, { configMode:'remote' }); gcOrphanRelations(cand); await persistCandidateState(cand,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(cand)); toast('Sync: Remote übernommen'); return; } syncFail('Merge','Erstsync-Konflikt: Lokaler und Remote-State enthalten unterschiedliche Daten, aber es existiert keine gemeinsame Sync-Baseline.'); }
+    var remoteFp=remote.fingerprint; if(remote.initialized && localFp===remoteFp){ rememberSyncFingerprint(localSync); toast('Sync: No-Op'); return; } if(remote.initialized && localFp===last && remoteFp!==last){ if(!remoteIncludesFingerprint(remote,last)) syncFail('Merge','Remote-Abstammung ist nicht nachweisbar; automatische Übernahme blockiert.'); recommendRecoveryZipBeforeRisk('Remote-Änderungen übernehmen'); var cand2=materializeLocalStateFromSyncState(localSnapshot, remote.state, { configMode:'remote' }); gcOrphanRelations(cand2); await persistCandidateState(cand2,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(cand2)); toast('Sync: Remote übernommen'); return; } if(!remote.initialized || (localFp!==last && remoteFp===last)){ var directSnapshot=cloneState(localSnapshot); result=await writeWithVerify(directSnapshot,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var succ2=materializeLocalStateFromSyncState(localSnapshot,result.remote.state,{configMode:'remote'}); await persistCandidateState(succ2,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(succ2)); toast('Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.'); } else if(result.kind==='sibling'){ var sib2=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); await persistCandidateState(sib2,'lokales Persistieren'); rememberSyncFingerprint(result.remote.fingerprint); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberSyncFingerprint(buildRilkeSyncComparableState(directSnapshot)); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Lokal hochgeladen'); } return; } var mergedSync=mergeSyncStates(localSnapshot,remote.state); var merged=materializeLocalStateFromSyncState(localSnapshot, mergedSync, { configMode:'local' }); gcOrphanRelations(merged); await persistCandidateState(merged,'lokales Persistieren'); try{ result=await writeWithVerify(cloneState(merged),remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'merge')); if(result.kind==='successor'){ var succ3=materializeLocalStateFromSyncState(localSnapshot,result.remote.state,{configMode:'remote'}); await persistCandidateState(succ3,'lokales Persistieren'); rememberSyncFingerprint(buildRilkeSyncComparableState(succ3)); toast('Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.'); } else if(result.kind==='sibling'){ var sib3=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); await persistCandidateState(sib3,'lokales Persistieren'); rememberSyncFingerprint(result.remote.fingerprint); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberSyncFingerprint(buildRilkeSyncComparableState(merged)); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Zusammengeführt und synchronisiert'); } }catch(e){ await rollbackLocal(pre); throw e; }
+  }catch(e){ var msg=(e&&e.message)||String(e); openModal('<h3>Sync fehlgeschlagen</h3><p class="detail-meta">'+esc(msg)+'</p><div class="modal-actions"><button class="btn" onclick="closeModal()">Schließen</button></div>'); } finally { _syncInProgress=false; } }
 
 /* ═══════════════════════════════════════════
    KARTEN-MODUS — Rendering
@@ -2318,6 +2411,8 @@ function confirmDeleteComp(compUid) {
 
 function doDeleteComp(compUid) {
   if (!ensureStateWritable()) return;
+  if (!S.deletedIds || typeof S.deletedIds !== 'object' || Array.isArray(S.deletedIds)) S.deletedIds = {};
+  S.deletedIds[compUid] = now();
   S.compositions = S.compositions.filter(function(c){return c.uid!==compUid});
   if (UI.selectedCompositionUid === compUid) UI.selectedCompositionUid = '';
   saveDebounced(); closeModal(); renderComposition(); toast('Komposition gel\u00f6scht');
