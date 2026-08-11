@@ -95,7 +95,8 @@ Rilke ist bewusst einfach gehalten:
 * kein Backend
 * kein Build-Step
 * lokal-first
-* Speicherung im Browser über `localStorage`
+* Inhalts-State IndexedDB-first; `localStorage` nur für kleine Konfigurations- und Sync-Metadaten
+* manueller, per AES-GCM verschlüsselter Gist-Sync (kein Auto-Sync)
 
 Der zentrale App-State liegt in `S`.
 
@@ -117,7 +118,7 @@ var S = {
 };
 ```
 
-Der aktuelle localStorage-Key ist:
+Der frühere, nur noch zur einmaligen Migration gelesene localStorage-Key ist:
 
 ```js
 poem_zettelkasten_v1
@@ -173,10 +174,12 @@ Alle Daten werden aktuell lokal im Browser gespeichert.
 
 Wichtig:
 
-* Daten liegen im `localStorage` des jeweiligen Browsers.
+* Inhaltsdaten liegen primär in IndexedDB; kleine Konfigurations- und Sync-Metadaten liegen in `localStorage`.
 * App-Updates auf GitHub überschreiben diese lokalen Daten nicht.
 * Browserdaten löschen bedeutet auch: lokale Rilke-Daten löschen.
-* Für Sicherung und Austausch sollte regelmäßig der Markdown-Export genutzt werden.
+* Für Sicherung und Austausch sollte regelmäßig der ZIP-Recovery-Export genutzt werden.
+* Der vorhandene verschlüsselte Gist-Sync wird ausschließlich manuell in den Speicher-Einstellungen gestartet; es gibt keinen Auto-Sync.
+* Reproduzierbare Prüfungen stehen in der [Zwei-Browser-Sync-Smoke-Testcheckliste](SYNC_SMOKE_TEST.md).
 
 Der Ordner-Modus ist aktuell nur vorbereitet, aber noch nicht aktiv. Es gibt noch keine File System API und keine echte Ordner-Speicherung.
 
@@ -214,7 +217,7 @@ Mögliche nächste Entwicklungsschritte:
 * Markdown-YAML-Export verbessern
 * Brainstorm-Sessions stärker strukturieren
 * täglichen Rilke-Schreibflow definieren
-* später optional Gist-Sync oder Obsidian-/Folder-Workflow prüfen
+* optional Obsidian-/Folder-Workflow prüfen
 
 Nicht geplant ist ein Umbau zu einem Dashboard, Task-Manager oder allgemeinen PKM-System.
 
