@@ -134,7 +134,15 @@ Die App kann direkt im Browser geöffnet werden.
 index.html öffnen
 ```
 
-Für Entwicklung empfiehlt sich ein lokaler Server, zum Beispiel mit VS Code Live Server.
+Der reine App-Betrieb über `file://` ist weiterhin möglich, aber **keine PWA-Testumgebung**: Manifest, Service Worker, Installation und Offline-App-Shell benötigen HTTPS oder `localhost`.
+
+Für Entwicklung und PWA-Tests empfiehlt sich ein lokaler Server, zum Beispiel mit VS Code Live Server oder:
+
+```text
+python3 -m http.server 8000
+```
+
+Danach die App über `http://localhost:8000/` öffnen.
 
 ---
 
@@ -146,16 +154,18 @@ Empfohlene Repository-Struktur:
 
 ```text
 repo/
-└── index.html
-```
-
-Optional später:
-
-```text
-repo/
 ├── index.html
+├── README.md
+├── SYNC_SMOKE_TEST.md
+├── PWA_SMOKE_TEST.md
 ├── manifest.json
-└── sw.js
+├── sw.js
+├── icons/
+│   ├── rilke-192.png
+│   └── rilke-512.png
+└── vendor/
+    ├── jszip-3.10.1.min.js
+    └── JSZIP_LICENSE.markdown
 ```
 
 GitHub Pages aktivieren:
@@ -165,6 +175,28 @@ GitHub Pages aktivieren:
 3. Branch `main` auswählen
 4. Root-Verzeichnis verwenden
 5. GitHub-Pages-URL öffnen
+
+GitHub Pages liefert diese Dateien als statische Website über HTTPS aus; ein Framework, Bundler oder Build-Schritt ist nicht erforderlich. Relative Assetpfade halten die PWA auch unter einem Repository-Subpfad funktionsfähig.
+
+---
+
+## PWA und Offline-Verhalten
+
+Rilke besitzt eine kleine installierbare App-Shell:
+
+* `manifest.json` beschreibt Name, Farben, Startpfad und Icons.
+* `sw.js` lädt ausschließlich App-Navigationen zum Repository-Root oder zu `index.html` network-first und nutzt die letzte erfolgreiche `index.html` als Offline-Fallback. Direkte Navigationen zu Dokumentations-, Manifest- oder anderen Dateien können den App-Shell-Cache nicht überschreiben.
+* Ausschließlich explizite lokale Dateien (Manifest, Icons und JSZip 3.10.1) werden cache-first behandelt.
+* Cross-Origin-, GitHub-/Gist- und Nicht-GET-Requests werden vom Service Worker nicht abgefangen oder gecacht.
+* Der Service Worker berührt weder IndexedDB noch `localStorage`; Rilke-Inhalte bleiben in der bestehenden Persistenzarchitektur.
+* Es gibt kein Auto-, Background- oder Periodic-Sync. Der verschlüsselte Gist-Sync bleibt ausschließlich manuell.
+* Eine neue Worker-Version übernimmt nicht aggressiv eine laufende Sitzung. Für Änderungen an statischen Assets muss der Rilke-Cache-Name in `sw.js` erhöht werden; die neue Version wird im normalen Browser-Lifecycle aktiv.
+
+JSZip 3.10.1 liegt lokal unter `vendor/`. Dadurch bleiben Markdown-ZIP und Recovery-ZIP nach einer erfolgreichen Online-Initialisierung auch offline verfügbar. Die Lizenz liegt daneben.
+
+Die Icons wurden als schlichte, vollflächige PNGs mit einem `R`-Monogramm erzeugt. Hintergrund, Papierfläche, Tinte und Akzentring verwenden ausschließlich die bestehende Rilke-Palette (`#f6f1dc`, `#fff9e6`, `#2a2a2a`, `#c9a227`); das Monogramm bleibt innerhalb der Maskable-Safe-Zone.
+
+Die reproduzierbare Installation-, Offline-, Sync- und Worker-Update-Prüfung steht in [PWA_SMOKE_TEST.md](PWA_SMOKE_TEST.md).
 
 ---
 
