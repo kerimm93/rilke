@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icons/rilke-192.png">
+<meta name="theme-color" content="#fffdf4">
 <title>Rilke — Gedichtezettelkasten</title>
 <style>
 /* ═══ RESET & VARS ═══ */
@@ -2415,9 +2418,9 @@ function ensureJsZipLoaded() {
   return new Promise(function(resolve, reject) {
     if (window.JSZip) { resolve(window.JSZip); return; }
     var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    script.src = './vendor/jszip-3.10.1.min.js';
     script.onload = function() { resolve(window.JSZip); };
-    script.onerror = function() { reject(new Error('JSZip CDN konnte nicht geladen werden')); };
+    script.onerror = function() { reject(new Error('Lokales JSZip konnte nicht geladen werden')); };
     document.head.appendChild(script);
   });
 }
@@ -2761,6 +2764,14 @@ init().catch(function(e) {
   switchTab('cards');
   toast('Startfehler: Speicher prüfen, ZIP-Backup empfohlen.');
 });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('./sw.js').catch(function(err) {
+      console.warn('Service Worker konnte nicht registriert werden', err);
+    });
+  });
+}
 </script>
 </body>
 </html>
