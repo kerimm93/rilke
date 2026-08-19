@@ -50,6 +50,8 @@ a{color:var(--accent);text-decoration:none}
 .card-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--shadow)}
 .card-item:hover{border-color:var(--border-strong);box-shadow:var(--shadow-lg)}
 .card-item.selected{border-color:var(--accent);background:var(--surface-2);box-shadow:0 0 0 2px var(--accent-soft)}
+.card-item[data-card-tree-uid]:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.card-item[data-card-tree-uid].selected::before{content:'›';display:inline-block;margin-right:5px;font-weight:700;color:var(--ink)}
 .card-item .sid{font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim);margin-right:6px}
 .card-item .text{font-size:0.9rem;color:var(--ink)}
 .card-item .comment{font-size:0.8rem;color:var(--ink-dim);margin-top:4px;font-style:italic}
@@ -185,7 +187,7 @@ a{color:var(--accent);text-decoration:none}
 <!-- ═══ KARTEN-MODUS ═══ -->
 <div class="main" id="view-cards">
   <div class="panel panel-left" id="cards-list-panel">
-    <div class="search-box"><input type="text" placeholder="Karten durchsuchen…" oninput="UI.searchQuery=this.value;renderCardsList()"></div>
+    <div class="search-box"><input type="text" placeholder="Karten durchsuchen…" oninput="UI.searchQuery=this.value;renderCards()"></div>
     <button class="btn btn-accent" style="width:100%;margin-bottom:12px" onclick="openNewCardModal()">+ Neue Karte</button>
     <div id="cards-tree"></div>
   </div>
@@ -1640,8 +1642,56 @@ function toast(msg) {
 }
 
 // ─── Modal ───
-function openModal(html) { $('modal-body').innerHTML = html; $('modal-overlay').classList.add('open'); }
-function closeModal() { $('modal-overlay').classList.remove('open'); }
+var _modalAutofocusTimer = null;
+var _modalReturnFocusElement = null;
+var _modalReturnsToCard = false;
+function cancelModalAutofocus() {
+  if (_modalAutofocusTimer !== null) clearTimeout(_modalAutofocusTimer);
+  _modalAutofocusTimer = null;
+}
+function scheduleModalAutofocus(targetId) {
+  cancelModalAutofocus();
+  var target = $(targetId);
+  if (!target) return;
+  _modalAutofocusTimer = setTimeout(function(){
+    _modalAutofocusTimer = null;
+    var overlay = $('modal-overlay');
+    if (overlay.classList.contains('open') && target.isConnected && $(targetId) === target) target.focus();
+  }, 100);
+}
+function openModal(html) {
+  cancelModalAutofocus();
+  var overlay = $('modal-overlay');
+  if (!overlay.classList.contains('open')) {
+    var active = document.activeElement;
+    _modalReturnFocusElement = active && active.nodeType === 1 && active !== document.body && typeof active.focus === 'function' ? active : null;
+    _modalReturnsToCard = false;
+  }
+  delete overlay.dataset.cardModal;
+  delete overlay.dataset.cardUid;
+  delete overlay.dataset.parentUid;
+  $('modal-body').innerHTML = html;
+  overlay.classList.add('open');
+}
+function closeModal() {
+  cancelModalAutofocus();
+  var returnFocusElement = _modalReturnFocusElement;
+  var returnsToCard = _modalReturnsToCard;
+  _modalReturnFocusElement = null;
+  _modalReturnsToCard = false;
+  var overlay = $('modal-overlay');
+  overlay.classList.remove('open');
+  delete overlay.dataset.cardModal;
+  delete overlay.dataset.cardUid;
+  delete overlay.dataset.parentUid;
+  setTimeout(function(){
+    if ($('modal-overlay').classList.contains('open')) return;
+    if (returnsToCard && UI.tab === 'cards') focusSelectedCardElement();
+    else if (returnFocusElement && returnFocusElement.isConnected && typeof returnFocusElement.focus === 'function') returnFocusElement.focus();
+  }, 0);
+}
+
+function returnCardModalFocusToTree() { _modalReturnsToCard = true; }
 
 function openSettingsModal() {
   var statusHtml = '';
@@ -1832,10 +1882,13 @@ function renderCardsList() {
     var matches = allActiveCards().filter(function(c){
       return (c.text||'').toLowerCase().includes(q) || (c.comment||'').toLowerCase().includes(q) || (c.sid||'').toLowerCase().includes(q);
     });
+    if (matches.length > 0 && !matches.some(function(c){ return c.uid === UI.selectedCardUid; })) UI.selectedCardUid = matches[0].uid;
     container.innerHTML = matches.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">⌕</div>Keine Treffer</div>' : '';
     matches.forEach(function(c){ container.innerHTML += cardItemHtml(c); });
     return;
   }
+  var ordered = cardTreeOrder();
+  if (ordered.length > 0 && !ordered.some(function(c){ return c.uid === UI.selectedCardUid; })) UI.selectedCardUid = ordered[0].uid;
   container.innerHTML = roots.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">✎</div>Noch keine Karten</div>' : '';
   roots.forEach(function(c){ container.innerHTML += renderCardTree(c, 0); });
 }
@@ -1853,7 +1906,8 @@ function renderCardTree(card, depth) {
 
 function cardItemHtml(c) {
   var sel = c.uid === UI.selectedCardUid ? ' selected' : '';
-  return '<div class="card-item'+sel+'" onclick="selectCard(\''+c.uid+'\')">' +
+  var selectedAttrs = sel ? ' tabindex="0" aria-current="true"' : ' tabindex="-1"';
+  return '<div class="card-item'+sel+'" data-card-tree-uid="'+esc(c.uid)+'"'+selectedAttrs+' onclick="selectTreeCard(\''+c.uid+'\')">' +
     '<span class="sid">'+esc(c.sid)+'</span>' +
     '<span class="status-dot '+c.status+'"></span>' +
     '<span class="text">'+esc(truncate(c.text, 60))+'</span>' +
@@ -1862,6 +1916,7 @@ function cardItemHtml(c) {
 }
 
 function selectCard(cardUid) { UI.selectedCardUid = cardUid; renderCards(); }
+function selectTreeCard(cardUid) { UI.selectedCardUid = cardUid; renderCards(); focusSelectedCardElement(); }
 
 function renderCardDetail() {
   var c = findCard(UI.selectedCardUid);
@@ -1930,7 +1985,9 @@ function openNewCardModal(parentUid, type) {
     '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2" placeholder="Notiz, Variante…"></textarea></div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateCard(\''+effectiveParent+'\')">Erstellen</button></div>'
   );
-  setTimeout(function(){ $('m-text').focus(); }, 100);
+  $('modal-overlay').dataset.cardModal = 'create';
+  $('modal-overlay').dataset.parentUid = effectiveParent || '';
+  scheduleModalAutofocus('m-text');
 }
 
 function doCreateCard(parentUid) {
@@ -1941,7 +1998,7 @@ function doCreateCard(parentUid) {
   var pUid = parentUid === 'null' || parentUid === '' ? null : parentUid;
   var c = createCard(text, comment, pUid);
   if (!c) return;
-  UI.selectedCardUid = c.uid; closeModal(); renderCards();
+  UI.selectedCardUid = c.uid; returnCardModalFocusToTree(); closeModal(); renderCards();
   toast('Karte '+c.sid+' erstellt');
 }
 
@@ -1954,11 +2011,14 @@ function openEditCardModal(cardUid) {
     '<div class="field"><label>Status</label><select id="m-status"><option value="draft"'+(c.status==='draft'?' selected':'')+'>Entwurf</option><option value="active"'+(c.status==='active'?' selected':'')+'>Aktiv</option><option value="archived"'+(c.status==='archived'?' selected':'')+'>Archiviert</option></select></div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doEditCard(\''+cardUid+'\')">Speichern</button></div>'
   );
+  $('modal-overlay').dataset.cardModal = 'edit';
+  $('modal-overlay').dataset.cardUid = cardUid;
+  scheduleModalAutofocus('m-text');
 }
 
 function doEditCard(cardUid) {
   if (!updateCard(cardUid, { text: $('m-text').value.trim(), comment: $('m-comment').value.trim(), status: $('m-status').value })) return;
-  closeModal(); renderCards(); toast('Karte gespeichert');
+  returnCardModalFocusToTree(); closeModal(); renderCards(); toast('Karte gespeichert');
 }
 
 function confirmDeleteCard(cardUid) {
@@ -2221,7 +2281,7 @@ function openNewCardFromRelation(relUid) {
     '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2">'+esc(prefilledComment)+'</textarea></div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateCardFromRel()">\u2728 Idee erstellen</button></div>'
   );
-  setTimeout(function(){ $('m-text').focus(); }, 100);
+  scheduleModalAutofocus('m-text');
 }
 
 function doCreateCardFromRel() {
@@ -2258,7 +2318,7 @@ function openNewCompModal() {
     '<div class="field"><label>Titel</label><input id="m-title" placeholder="Gedichtentwurf\u2026"></div>' +
     '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doCreateComp()">Erstellen</button></div>'
   );
-  setTimeout(function(){ $('m-title').focus(); }, 100);
+  scheduleModalAutofocus('m-title');
 }
 
 function doCreateComp() {
@@ -2736,7 +2796,131 @@ async function init() {
   if (_storageReadOnly) toast('Speicherproblem: ZIP-Backup empfohlen.');
 }
 
-document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+function cardTreeOrder() {
+  var ordered = [];
+  function appendBranch(card) {
+    ordered.push(card);
+    childrenOf(card.uid).forEach(appendBranch);
+  }
+  rootCards().forEach(appendBranch);
+  return ordered;
+}
+
+function cardSiblings(card) {
+  return card.parentUid ? childrenOf(card.parentUid) : rootCards();
+}
+
+function cardTreeElement(cardUid) {
+  var items = document.querySelectorAll('#cards-tree [data-card-tree-uid]');
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].dataset.cardTreeUid === cardUid) return items[i];
+  }
+  return null;
+}
+
+function focusSelectedCardElement() {
+  var item = cardTreeElement(UI.selectedCardUid);
+  if (!item) return false;
+  try { item.focus({preventScroll:true}); } catch (e) { item.focus(); }
+  return true;
+}
+
+function focusCard(cardUid) {
+  var card = findCard(cardUid);
+  if (!card || card.status === 'archived') return false;
+  UI.selectedCardUid = cardUid;
+  renderCards();
+  var item = cardTreeElement(cardUid);
+  if (!item) return false;
+  try { item.focus({preventScroll:true}); } catch (e) { item.focus(); }
+  item.scrollIntoView({block:'nearest'});
+  return true;
+}
+
+function isKeyboardFormControl(target) {
+  if (!target || target.nodeType !== 1) return false;
+  return !!target.closest('input, textarea, select, button, [contenteditable="true"], [contenteditable=""]');
+}
+
+function keyboardCardTreeItem(target) {
+  if (!target || target.nodeType !== 1 || typeof target.closest !== 'function') return null;
+  return target.closest('#cards-tree [data-card-tree-uid]');
+}
+
+function handleCardModalSubmit(e, overlay) {
+  if (e.key !== 'Enter' || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+  if (overlay.dataset.cardModal === 'create') {
+    e.preventDefault();
+    doCreateCard(overlay.dataset.parentUid || null);
+    return true;
+  }
+  if (overlay.dataset.cardModal === 'edit') {
+    e.preventDefault();
+    doEditCard(overlay.dataset.cardUid);
+    return true;
+  }
+  return false;
+}
+
+function handleGlobalKeydown(e) {
+  if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+  var overlay = $('modal-overlay');
+  var modalOpen = overlay.classList.contains('open');
+
+  if (e.key === 'Escape') {
+    if (modalOpen) closeModal();
+    return;
+  }
+  if (modalOpen) {
+    handleCardModalSubmit(e, overlay);
+    return;
+  }
+  if (isKeyboardFormControl(e.target) || UI.tab !== 'cards') return;
+
+  var treeItem = keyboardCardTreeItem(e.target);
+  if (!treeItem) return;
+  var current = findCard(treeItem.dataset.cardTreeUid);
+  if (!current || current.status === 'archived' || current.uid !== UI.selectedCardUid) return;
+
+  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    if (!cardTreeElement(current.uid)) return;
+    e.preventDefault();
+    openEditCardModal(current.uid);
+    returnCardModalFocusToTree();
+    return;
+  }
+
+  if (UI.searchQuery) return;
+  if (e.ctrlKey) {
+    if (e.key === 'ArrowRight' && !e.metaKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      openNewCardModal(current.uid, 'child');
+      returnCardModalFocusToTree();
+    }
+    return;
+  }
+  if (e.metaKey || e.altKey || e.shiftKey) return;
+
+  var target = null;
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    var siblings = cardSiblings(current);
+    var siblingIndex = siblings.findIndex(function(card){ return card.uid === current.uid; });
+    var offset = e.key === 'ArrowUp' ? -1 : 1;
+    target = siblings[siblingIndex + offset] || null;
+  } else if (e.key === 'ArrowLeft') {
+    target = current.parentUid ? findCard(current.parentUid) : null;
+  } else if (e.key === 'ArrowRight') {
+    target = childrenOf(current.uid)[0] || null;
+  } else if (e.key === 'PageUp' || e.key === 'PageDown') {
+    var ordered = cardTreeOrder();
+    var cardIndex = ordered.findIndex(function(card){ return card.uid === current.uid; });
+    var pageOffset = e.key === 'PageUp' ? -1 : 1;
+    target = ordered[cardIndex + pageOffset] || null;
+  }
+  if (target && focusCard(target.uid)) e.preventDefault();
+}
+
+document.addEventListener('keydown', handleGlobalKeydown);
 
 window.addEventListener('storage', function(event) {
   if (event.key !== LKEY || !event.newValue) return;
