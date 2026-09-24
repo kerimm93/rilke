@@ -1546,21 +1546,100 @@ function nextOrder(parentUid) {
   return siblings.length;
 }
 
-function createCard(text, comment, parentUid) {
-  if (!ensureStateWritable()) return null;
+function createCardInMemory(text, comment, parentUid, cardOrder, cardSid, timestamp) {
+  var ts = timestamp || now();
   var c = {
-    uid: uid(), sid: nextSid(parentUid), text: text || '', comment: comment || '',
-    parentUid: parentUid || null, childUids: [], order: nextOrder(parentUid),
+    uid: uid(), sid: cardSid || nextSid(parentUid), text: text === undefined ? '' : text, comment: comment || '',
+    parentUid: parentUid || null, childUids: [], order: cardOrder === undefined ? nextOrder(parentUid) : cardOrder,
     links: [], tags: [], attachments: [], status: 'draft',
-    createdAt: now(), updatedAt: now()
+    createdAt: ts, updatedAt: ts
   };
   S.cards.push(c);
   if (parentUid) {
     var p = findCard(parentUid);
-    if (p) { if (!p.childUids) p.childUids = []; p.childUids.push(c.uid); p.updatedAt = now(); }
+    if (p) {
+      if (!Array.isArray(p.childUids)) p.childUids = [];
+      if (p.childUids.indexOf(c.uid) === -1) p.childUids.push(c.uid);
+      p.updatedAt = ts;
+    }
   }
+  return c;
+}
+
+function createCard(text, comment, parentUid) {
+  if (!ensureStateWritable()) return null;
+  var c = createCardInMemory(text, comment, parentUid);
   saveDebounced();
   return c;
+}
+
+function sidForSiblingPosition(parentUid, position) {
+  if (!parentUid) return buildSid([String(position)]);
+  var parent = findCard(parentUid);
+  var parentParts = parent ? parseSid(parent.sid) : [];
+  if (!isValidSidParts(parentParts)) return '';
+  var segment = parentParts.length % 2 === 1 ? sidIndexToLetter(position) : String(position);
+  return buildSid(parentParts.concat([segment]));
+}
+
+function planDescendantSidRebase(cardUid, parentSid, plan, seen) {
+  if (seen[cardUid]) return false;
+  seen[cardUid] = true;
+  var parentParts = parseSid(parentSid);
+  if (!isValidSidParts(parentParts)) return false;
+  var descendants = childrenOf(cardUid);
+  for (var i = 0; i < descendants.length; i++) {
+    var child = descendants[i];
+    var oldParts = parseSid(child.sid);
+    if (!isValidSidParts(oldParts)) return false;
+    var desired = buildSid(parentParts.concat([oldParts[oldParts.length - 1]]));
+    if (!desired || !isDirectChildSid(parentParts, parseSid(desired))) return false;
+    plan.push({card:child, sid:desired, order:child.order});
+    if (!planDescendantSidRebase(child.uid, desired, plan, seen)) return false;
+  }
+  return true;
+}
+
+function buildSiblingInsertPlan(parentUid, siblings, currentIndex) {
+  var newSid = sidForSiblingPosition(parentUid, currentIndex + 2);
+  if (!newSid || !isValidSidParts(parseSid(newSid))) return null;
+  var changes = [], seen = {};
+  for (var i = 0; i < siblings.length; i++) {
+    var position = i <= currentIndex ? i + 1 : i + 2;
+    var desiredSid = sidForSiblingPosition(parentUid, position);
+    if (!desiredSid || !isValidSidParts(parseSid(desiredSid))) return null;
+    changes.push({card:siblings[i], order:i <= currentIndex ? i : i + 1, sid:desiredSid});
+    if (!planDescendantSidRebase(siblings[i].uid, desiredSid, changes, seen)) return null;
+  }
+  return {changes:changes, newOrder:currentIndex + 1, newSid:newSid};
+}
+
+function applySiblingInsertPlan(plan, timestamp) {
+  plan.changes.forEach(function(change){
+    if (change.card.order !== change.order || change.card.sid !== change.sid) {
+      change.card.order = change.order;
+      change.card.sid = change.sid;
+      change.card.updatedAt = timestamp;
+    }
+  });
+}
+
+function insertSiblingAfter(cardUid, text, comment, options) {
+  options = options || {};
+  if (!ensureStateWritable()) return null;
+  var current = findCard(cardUid);
+  if (!current || current.status === 'archived') return null;
+  var parentUid = current.parentUid || null;
+  var siblings = parentUid ? childrenOf(parentUid) : rootCards();
+  var currentIndex = siblings.findIndex(function(card){ return card.uid === current.uid; });
+  if (currentIndex < 0) return null;
+  var plan = buildSiblingInsertPlan(parentUid, siblings, currentIndex);
+  if (!plan) return null;
+  var ts = options.timestamp || now();
+  applySiblingInsertPlan(plan, ts);
+  var created = createCardInMemory(text, comment, parentUid, plan.newOrder, plan.newSid, ts);
+  if (!options.deferSave) saveDebounced();
+  return created;
 }
 
 function updateCard(cardUid, fields) {
@@ -1670,6 +1749,8 @@ function openModal(html) {
   delete overlay.dataset.cardModal;
   delete overlay.dataset.cardUid;
   delete overlay.dataset.parentUid;
+  delete overlay.dataset.afterUid;
+  delete overlay.dataset.preserveTextWhitespace;
   $('modal-body').innerHTML = html;
   overlay.classList.add('open');
 }
@@ -1684,6 +1765,8 @@ function closeModal() {
   delete overlay.dataset.cardModal;
   delete overlay.dataset.cardUid;
   delete overlay.dataset.parentUid;
+  delete overlay.dataset.afterUid;
+  delete overlay.dataset.preserveTextWhitespace;
   $('modal-body').innerHTML = '';
   setTimeout(function(){
     if ($('modal-overlay').classList.contains('open')) return;
@@ -1975,7 +2058,7 @@ function renderRelationsList(cardUid) {
 
 /* ═══ CARD MODALS ═══ */
 
-function openNewCardModal(parentUid, type) {
+function openNewCardModal(parentUid, type, afterUid) {
   var parentLabel = '';
   if (parentUid && type === 'child') { var p = findCard(parentUid); parentLabel = p ? ' (unter '+p.sid+')' : ''; }
   if (type === 'sibling' && parentUid) { var pp = findCard(parentUid); parentLabel = pp ? ' (neben '+pp.sid+')' : ''; }
@@ -1988,6 +2071,7 @@ function openNewCardModal(parentUid, type) {
   );
   $('modal-overlay').dataset.cardModal = 'create';
   $('modal-overlay').dataset.parentUid = effectiveParent || '';
+  $('modal-overlay').dataset.afterUid = afterUid || '';
   scheduleModalAutofocus('m-text');
 }
 
@@ -1997,29 +2081,84 @@ function doCreateCard(parentUid) {
   if (!text) { toast('Text darf nicht leer sein'); return; }
   var comment = $('m-comment').value.trim();
   var pUid = parentUid === 'null' || parentUid === '' ? null : parentUid;
-  var c = createCard(text, comment, pUid);
+  var afterUid = $('modal-overlay').dataset.afterUid;
+  var c = afterUid ? insertSiblingAfter(afterUid, text, comment) : createCard(text, comment, pUid);
   if (!c) return;
   UI.selectedCardUid = c.uid; returnCardModalFocusToTree(); closeModal(); renderCards();
   toast('Karte '+c.sid+' erstellt');
 }
 
-function openEditCardModal(cardUid) {
+function openEditCardModal(cardUid, options) {
+  options = options || {};
   var c = findCard(cardUid); if (!c) return;
   openModal(
     '<h3>Karte bearbeiten <span style="font-family:var(--mono);font-size:0.8rem;color:var(--ink-dim)">'+esc(c.sid)+'</span></h3>' +
     '<div class="field"><label>Text</label><textarea id="m-text" rows="4">'+esc(c.text)+'</textarea></div>' +
     '<div class="field"><label>Kommentar</label><textarea id="m-comment" rows="2">'+esc(c.comment)+'</textarea></div>' +
     '<div class="field"><label>Status</label><select id="m-status"><option value="draft"'+(c.status==='draft'?' selected':'')+'>Entwurf</option><option value="active"'+(c.status==='active'?' selected':'')+'>Aktiv</option><option value="archived"'+(c.status==='archived'?' selected':'')+'>Archiviert</option></select></div>' +
-    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doEditCard(\''+cardUid+'\')">Speichern</button></div>'
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn" onclick="splitCardAtCursor(\''+cardUid+'\',\'sibling\')">Split ↓</button><button class="btn" onclick="splitCardAtCursor(\''+cardUid+'\',\'child\')">Split →</button><button class="btn btn-accent" onclick="doEditCard(\''+cardUid+'\')">Speichern</button></div>'
   );
   $('modal-overlay').dataset.cardModal = 'edit';
   $('modal-overlay').dataset.cardUid = cardUid;
+  if (options.preserveTextWhitespace) $('modal-overlay').dataset.preserveTextWhitespace = 'true';
   scheduleModalAutofocus('m-text');
 }
 
 function doEditCard(cardUid) {
-  if (!updateCard(cardUid, { text: $('m-text').value.trim(), comment: $('m-comment').value.trim(), status: $('m-status').value })) return;
+  var preserveTextWhitespace = $('modal-overlay').dataset.preserveTextWhitespace === 'true';
+  var text = preserveTextWhitespace ? $('m-text').value : $('m-text').value.trim();
+  if (!updateCard(cardUid, { text: text, comment: $('m-comment').value.trim(), status: $('m-status').value })) return;
   returnCardModalFocusToTree(); closeModal(); renderCards(); toast('Karte gespeichert');
+}
+
+function splitCardAtCursor(cardUid, direction) {
+  if (!ensureStateWritable()) return null;
+  if (direction !== 'sibling' && direction !== 'child') return null;
+  var overlay = $('modal-overlay');
+  var editor = $('m-text');
+  var current = findCard(cardUid);
+  if (!current || !editor || overlay.dataset.cardModal !== 'edit' || overlay.dataset.cardUid !== cardUid) return null;
+  if (editor.selectionStart !== editor.selectionEnd) { toast('Bitte die Markierung aufheben und nur den Cursor setzen.'); return null; }
+  var raw = editor.value;
+  var cursor = editor.selectionStart;
+  var left = raw.slice(0, cursor);
+  var right = raw.slice(cursor);
+  if (!right.trim()) { toast('Rechts vom Cursor steht kein Inhalt.'); return null; }
+  var comment = $('m-comment').value.trim();
+  var status = $('m-status').value;
+  if (status === 'archived') {
+    toast('Eine Karte kann nicht gleichzeitig geteilt und archiviert werden.');
+    return null;
+  }
+  var childPlan = null;
+  if (direction === 'child') {
+    var childSiblings = childrenOf(cardUid);
+    childPlan = buildSiblingInsertPlan(cardUid, childSiblings, childSiblings.length - 1);
+    if (!childPlan) {
+      toast('Die Karten-ID ist ungültig; Split nach rechts wurde nicht ausgeführt.');
+      return null;
+    }
+  }
+  var ts = now();
+  var created;
+  if (direction === 'sibling') created = insertSiblingAfter(cardUid, right, '', {timestamp:ts, deferSave:true});
+  else if (direction === 'child') {
+    applySiblingInsertPlan(childPlan, ts);
+    created = createCardInMemory(right, '', cardUid, childPlan.newOrder, childPlan.newSid, ts);
+  }
+  if (!created) return null;
+  current.text = left;
+  current.comment = comment;
+  current.status = status;
+  current.updatedAt = ts;
+  saveDebounced();
+  UI.selectedCardUid = created.uid;
+  closeModal();
+  renderCards();
+  openEditCardModal(created.uid, {preserveTextWhitespace:true});
+  returnCardModalFocusToTree();
+  toast('Karte am Cursor geteilt');
+  return created;
 }
 
 function confirmDeleteCard(cardUid) {
@@ -2897,6 +3036,11 @@ function handleGlobalKeydown(e) {
     if (e.key === 'ArrowRight' && !e.metaKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       openNewCardModal(current.uid, 'child');
+      returnCardModalFocusToTree();
+    }
+    if (e.key === 'ArrowDown' && !e.metaKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      openNewCardModal(current.parentUid || null, 'sibling', current.uid);
       returnCardModalFocusToTree();
     }
     return;
