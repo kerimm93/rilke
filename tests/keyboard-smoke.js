@@ -45,6 +45,8 @@ function focusable(name) {
 const textArea = focusable('modal textarea');
 textArea.closest = selector=>selector.includes('textarea') ? textArea : null;
 textArea.value = 'Card text';
+textArea.selectionStart = textArea.value.length;
+textArea.selectionEnd = textArea.value.length;
 const commentArea = {value:''};
 const statusSelect = {value:'active'};
 const titleInput = focusable('composition title');
@@ -114,6 +116,14 @@ const context = {
     created.push(parentUid);
     createdCardCount++;
     const card = {uid:'new'+createdCardCount, sid:parentUid ? '1.b.1' : '3', text, comment, parentUid, order:parentUid ? context.childrenOf(parentUid).length : 99, status:'active'};
+    cards.push(card);
+    return card;
+  },
+  insertSiblingAfter(afterUid, text, comment){
+    created.push(`after:${afterUid}`);
+    createdCardCount++;
+    const current = cards.find(card=>card.uid === afterUid);
+    const card = {uid:'new'+createdCardCount, sid:'1.c', text, comment, parentUid:current.parentUid, order:current.order+1, status:'active'};
     cards.push(card);
     return card;
   },
@@ -267,6 +277,7 @@ context.document.body.focus();
 const selectedBeforeBodyKeys = context.UI.selectedCardUid;
 ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Enter'].forEach(keyName=>assert.equal(key(keyName), false));
 assert.equal(key('ArrowRight', {ctrlKey:true}), false);
+assert.equal(key('ArrowDown', {ctrlKey:true}), false);
 assert.equal(context.UI.selectedCardUid, selectedBeforeBodyKeys);
 assert.equal(modalOpen, false);
 const headerElement = focusable('header');
@@ -401,6 +412,30 @@ assert.equal(modalOpen, false);
 assert.notEqual(context.document.activeElement, textArea);
 assert.equal(context.document.activeElement.dataset.cardTreeUid, context.UI.selectedCardUid);
 assert.equal(key('PageUp'), true);
+
+// Ctrl+ArrowDown opens the same cancel-safe create modal with a relative anchor.
+const relativeAnchorUid = context.UI.selectedCardUid;
+assert.equal(key('ArrowDown', {ctrlKey:true}), true);
+assert.equal(modalOpen, true);
+assert.equal(overlay.dataset.cardModal, 'create');
+assert.equal(overlay.dataset.afterUid, context.UI.selectedCardUid);
+assert.equal(key('Escape'), false);
+flushTimers();
+assert.equal(created.length, 0);
+assert.equal(context.document.activeElement.dataset.cardTreeUid, context.UI.selectedCardUid);
+
+assert.equal(key('ArrowDown', {ctrlKey:true}), true);
+flushTimers();
+textArea.value = 'Inserted sibling';
+assert.equal(key('Enter', {ctrlKey:true}), true);
+flushTimers();
+assert.equal(created.pop(), `after:${relativeAnchorUid}`);
+assert.equal(context.UI.selectedCardUid, 'new1');
+assert.equal(context.document.activeElement.dataset.cardTreeUid, 'new1');
+cards.splice(cards.findIndex(card=>card.uid === 'new1'), 1);
+createdCardCount--;
+focusTreeUid(relativeAnchorUid);
+created.length = 0;
 
 // A card-create modal opened by its normal button returns to that button on cancel.
 const newCardButton = focusable('new card button');
@@ -544,7 +579,14 @@ assert.equal(key('ArrowLeft'), true);
 // Existing defensive guards remain effective.
 const selectedBeforeGuard = context.UI.selectedCardUid;
 assert.equal(key('ArrowUp', {target:textArea}), false);
+assert.equal(key('ArrowDown', {ctrlKey:true, target:textArea}), false);
+['input','select','button','[contenteditable="true"]'].forEach(selector=>{
+  const control = focusable(selector);
+  control.closest = query=>query.includes(selector) ? control : null;
+  assert.equal(key('ArrowDown', {ctrlKey:true, target:control}), false);
+});
 assert.equal(key('ArrowUp', {isComposing:true}), false);
+assert.equal(key('ArrowDown', {ctrlKey:true, isComposing:true}), false);
 assert.equal(key('ArrowUp', {keyCode:229}), false);
 assert.equal(context.UI.selectedCardUid, selectedBeforeGuard);
 
@@ -552,6 +594,7 @@ assert.equal(context.UI.selectedCardUid, selectedBeforeGuard);
 modalOpen = true;
 overlay.dataset = {};
 assert.equal(key('Enter', {ctrlKey:true}), false);
+assert.equal(key('ArrowDown', {ctrlKey:true}), false);
 assert.equal(created.length, 0);
 assert.equal(edited.length, 0);
 
