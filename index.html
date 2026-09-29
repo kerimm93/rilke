@@ -131,6 +131,10 @@ a{color:var(--accent);text-decoration:none}
 .relation-pair{font-size:0.82rem;margin-bottom:4px}
 .relation-pair .sid{font-family:var(--mono);font-size:0.72rem;color:var(--ink-dim)}
 .relation-note{font-size:0.8rem;color:var(--ink-light);font-style:italic;margin-top:4px}
+.relation-link{width:100%;text-align:left;cursor:pointer}
+.relation-link:hover{border-color:var(--border-strong);background:var(--bg-2)}
+.crossref-results{display:grid;gap:6px;max-height:360px;overflow-y:auto}
+.crossref-result{width:100%;text-align:left;cursor:pointer}
 
 /* ═══ COMPOSITION ═══ */
 .comp-item{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:all .12s;box-shadow:var(--shadow)}
@@ -187,7 +191,7 @@ a{color:var(--accent);text-decoration:none}
 <!-- ═══ KARTEN-MODUS ═══ -->
 <div class="main" id="view-cards">
   <div class="panel panel-left" id="cards-list-panel">
-    <div class="search-box"><input type="text" placeholder="Karten durchsuchen…" oninput="UI.searchQuery=this.value;renderCards()"></div>
+    <div class="search-box"><input id="card-search" type="text" placeholder="Karten durchsuchen…" oninput="UI.searchQuery=this.value;renderCards()"></div>
     <button class="btn btn-accent" style="width:100%;margin-bottom:12px" onclick="openNewCardModal()">+ Neue Karte</button>
     <div id="cards-tree"></div>
   </div>
@@ -1100,6 +1104,43 @@ function gcOrphanRelations(targetState) {
   return changed;
 }
 
+function dedupeManualPairRelations(targetState) {
+  var T = targetState || S;
+  if (!Array.isArray(T.pairRelations)) return false;
+  if (!T.deletedIds || typeof T.deletedIds !== 'object' || Array.isArray(T.deletedIds)) T.deletedIds = {};
+  var groups = {};
+  T.pairRelations.forEach(function(relation) {
+    if (!relation || relation.origin !== 'manual' || !relation.uid || !relation.fromCardUid || !relation.toCardUid) return;
+    var pair = [String(relation.fromCardUid), String(relation.toCardUid)].sort();
+    var key = JSON.stringify(pair);
+    (groups[key] = groups[key] || []).push(relation);
+  });
+  var discarded = {};
+  Object.keys(groups).forEach(function(key) {
+    var relations = groups[key];
+    if (relations.length < 2) return;
+    relations.sort(function(a, b) {
+      var af = getObjectFreshness(a);
+      var bf = getObjectFreshness(b);
+      af = af === null ? Number.NEGATIVE_INFINITY : af;
+      bf = bf === null ? Number.NEGATIVE_INFINITY : bf;
+      if (af !== bf) return bf - af;
+      return String(a.uid || '').localeCompare(String(b.uid || ''));
+    });
+    relations.slice(1).forEach(function(relation) { discarded[relation.uid] = relation; });
+  });
+  var removedUids = Object.keys(discarded);
+  if (!removedUids.length) return false;
+  T.pairRelations = T.pairRelations.filter(function(relation) { return !relation || !discarded[relation.uid]; });
+  removedUids.forEach(function(uid) {
+    var relationFreshness = getObjectFreshness(discarded[uid]);
+    var existing = validIso(T.deletedIds[uid]) ? Date.parse(T.deletedIds[uid]) : Number.NEGATIVE_INFINITY;
+    var timestamp = Math.max(Date.now(), relationFreshness === null ? Number.NEGATIVE_INFINITY : relationFreshness, existing);
+    T.deletedIds[uid] = new Date(timestamp).toISOString();
+  });
+  return true;
+}
+
 
 function compareCardsForSidRepair(a, b) {
   var at = a && validIso(a.createdAt) ? Date.parse(a.createdAt) : Number.POSITIVE_INFINITY;
@@ -1213,13 +1254,15 @@ function resolveActiveSidCollisions(state) {
 function runSyncCandidateMaintenance(candidate) {
   var sid = resolveActiveSidCollisions(candidate);
   var relationGcChanged = gcOrphanRelations(candidate);
-  return { changed: !!(sid.changed || relationGcChanged), sidChanged: !!sid.changed, sidChanges: sid.changes || [], relationGcChanged: !!relationGcChanged };
+  var manualRelationDedupeChanged = dedupeManualPairRelations(candidate);
+  return { changed: !!(sid.changed || relationGcChanged || manualRelationDedupeChanged), sidChanged: !!sid.changed, sidChanges: sid.changes || [], relationGcChanged: !!relationGcChanged, manualRelationDedupeChanged: !!manualRelationDedupeChanged };
 }
 
 function runLocalRecoveryMaintenance() {
   var changed = normalizeLoadedState();
   changed = pruneDeletedIds() || changed;
   changed = gcOrphanRelations() || changed;
+  changed = dedupeManualPairRelations() || changed;
   return changed;
 }
 
@@ -1690,6 +1733,93 @@ function relationsForCard(cardUid) {
   return S.pairRelations.filter(function(r){ return r.fromCardUid===cardUid; });
 }
 
+function brainstormRelationsForCard(cardUid) {
+  return S.pairRelations.filter(function(r){ return r.origin==='brainstorm' && r.fromCardUid===cardUid; });
+}
+
+function manualOutgoingRelationsForCard(cardUid) {
+  return S.pairRelations.filter(function(r){ return r.origin==='manual' && r.fromCardUid===cardUid; });
+}
+
+function manualIncomingRelationsForCard(cardUid) {
+  return S.pairRelations.filter(function(r){ return r.origin==='manual' && r.toCardUid===cardUid; });
+}
+
+function manualRelationBetweenCards(firstUid, secondUid) {
+  return S.pairRelations.find(function(r){
+    return r.origin==='manual' && (
+      (r.fromCardUid===firstUid && r.toCardUid===secondUid) ||
+      (r.fromCardUid===secondUid && r.toCardUid===firstUid)
+    );
+  });
+}
+
+function createManualCrossReference(fromUid, toUid) {
+  var from = findCard(fromUid);
+  var to = findCard(toUid);
+  if (!from || !to || from.status==='archived' || to.status==='archived' || fromUid===toUid) return null;
+  var existing = manualRelationBetweenCards(fromUid, toUid);
+  if (existing) { toast('Verweis besteht bereits'); return existing; }
+  return createRelation(fromUid, toUid, '', 'manual');
+}
+
+function normalizeCrossReferenceSearch(value) {
+  return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function fuzzySubsequenceScore(query, value) {
+  var qi = 0;
+  var gaps = 0;
+  var last = -1;
+  for (var i = 0; i < value.length && qi < query.length; i++) {
+    if (value[i] === query[qi]) {
+      if (last >= 0) gaps += i - last - 1;
+      last = i;
+      qi++;
+    }
+  }
+  return qi === query.length ? Math.max(1, 45 - gaps - Math.max(0, value.length-query.length)/4) : 0;
+}
+
+function crossReferenceSearchScore(query, card) {
+  var q = normalizeCrossReferenceSearch(query);
+  if (!q) return 1;
+  var sid = normalizeCrossReferenceSearch(card.sid);
+  var fields = [sid, normalizeCrossReferenceSearch(card.text), normalizeCrossReferenceSearch(card.comment)];
+  var tokens = q.split(' ');
+  var total = 0;
+  var matched = 0;
+  fields.forEach(function(field, fieldIndex){
+    if (!field) return;
+    if (fieldIndex===0 && field===q) total = Math.max(total, 1000);
+    else if (field===q) total = Math.max(total, 800);
+    if (field.indexOf(q)===0) total = Math.max(total, 650);
+    else if (field.indexOf(q)>=0) total = Math.max(total, 550);
+  });
+  tokens.forEach(function(token){
+    var best = 0;
+    fields.forEach(function(field){
+      if (!field) return;
+      var words = field.split(/[^a-z0-9]+/).filter(function(word){return word});
+      words.forEach(function(word){
+        if (word===token) best = Math.max(best, 180);
+        else if (word.indexOf(token)===0) best = Math.max(best, 140);
+        else if (word.indexOf(token)>=0) best = Math.max(best, 110);
+        else best = Math.max(best, fuzzySubsequenceScore(token, word));
+      });
+    });
+    if (best > 0) { matched++; total += best; }
+  });
+  if (!matched) return 0;
+  return total + matched * 60;
+}
+
+function rankCrossReferenceCards(query, cards) {
+  return cards.map(function(card){ return {card:card, score:crossReferenceSearchScore(query, card)}; })
+    .filter(function(result){ return result.score > 0; })
+    .sort(function(a,b){ return b.score-a.score || String(a.card.sid||'').localeCompare(String(b.card.sid||'')); });
+}
+
 // ─── Composition helpers ───
 function findComp(u) { return S.compositions.find(function(c){return c.uid===u}); }
 
@@ -2027,12 +2157,15 @@ function renderCardActions() {
       '<button class="btn" onclick="openNewCardModal(\''+c.uid+'\',\'child\')">↳ Unterkarte</button>' +
       '<button class="btn" onclick="openNewCardModal(\''+c.parentUid+'\',\'sibling\')">↔ Schwesterkarte</button>' +
       '<button class="btn" onclick="openSplitModal(\''+c.uid+'\')">✂ Text splitten</button>' +
+      '<button class="btn" onclick="openCrossReferencePicker(\''+c.uid+'\')">+ Verweis hinzufügen</button>' +
       '<button class="btn btn-danger" onclick="confirmDeleteCard(\''+c.uid+'\')">✕ Archivieren</button>' +
     '</div>' +
     '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
     '<div class="detail-label">Kinder</div>' + renderChildrenList(c.uid) +
     '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
-    '<div class="detail-label">Verbindungen</div>' + renderRelationsList(c.uid);
+    '<div class="detail-label">Querverweise</div>' + renderManualCrossReferences(c.uid) +
+    '<hr style="border:none;border-top:1px solid var(--border);margin:16px 0">' +
+    '<div class="detail-label">Brainstorm-Verbindungen</div>' + renderRelationsList(c.uid);
 }
 
 function renderChildrenList(parentUid) {
@@ -2044,7 +2177,7 @@ function renderChildrenList(parentUid) {
 }
 
 function renderRelationsList(cardUid) {
-  var rels = relationsForCard(cardUid);
+  var rels = brainstormRelationsForCard(cardUid);
   if (rels.length === 0) return '<div style="color:var(--ink-dim);font-size:0.82rem;padding:6px 0">Keine Verbindungen</div>';
   return rels.map(function(r){
     var to = findCard(r.toCardUid);
@@ -2054,6 +2187,66 @@ function renderRelationsList(cardUid) {
       '<div style="font-size:0.72rem;color:var(--ink-dim);margin-top:4px">'+r.positionType+(r.isInteresting?' · ⭐':'')+'</div>' +
     '</div>';
   }).join('');
+}
+
+function renderManualCrossReferences(cardUid) {
+  var outgoing = manualOutgoingRelationsForCard(cardUid).map(function(relation){
+    return {relation:relation, card:findCard(relation.toCardUid), direction:'→'};
+  });
+  var incoming = manualIncomingRelationsForCard(cardUid).map(function(relation){
+    return {relation:relation, card:findCard(relation.fromCardUid), direction:'←'};
+  });
+  var references = outgoing.concat(incoming).filter(function(item){ return item.card && item.card.status!=='archived'; });
+  if (references.length === 0) return '<div style="color:var(--ink-dim);font-size:0.82rem;padding:6px 0">Keine Querverweise</div>';
+  return references.map(function(item){
+    return '<button class="relation-item relation-link" onclick="followCrossReference(\''+item.card.uid+'\')">' +
+      '<div class="relation-pair"><span class="sid">'+item.direction+' '+esc(item.card.sid)+'</span> '+esc(truncate(item.card.text,40))+'</div>' +
+    '</button>';
+  }).join('');
+}
+
+function followCrossReference(cardUid) {
+  UI.searchQuery = '';
+  var searchInput = $('card-search');
+  if (searchInput) searchInput.value = '';
+  return focusCard(cardUid);
+}
+
+function openCrossReferencePicker(fromUid) {
+  var from = findCard(fromUid);
+  if (!from || from.status==='archived') return;
+  openModal(
+    '<h3>Verweis hinzufügen <span class="detail-meta">'+esc(from.sid)+'</span></h3>' +
+    '<div class="search-box"><input id="crossref-search" type="text" placeholder="Karte suchen…" oninput="renderCrossReferencePicker(\''+fromUid+'\')"></div>' +
+    '<div id="crossref-results" class="crossref-results"></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button></div>'
+  );
+  renderCrossReferencePicker(fromUid);
+  scheduleModalAutofocus('crossref-search');
+}
+
+function renderCrossReferencePicker(fromUid) {
+  var el = $('crossref-results');
+  if (!el) return;
+  var query = ($('crossref-search') || {}).value || '';
+  var candidates = allActiveCards().filter(function(card){ return card.uid!==fromUid; });
+  var results = rankCrossReferenceCards(query, candidates).slice(0, 25);
+  el.innerHTML = results.length ? results.map(function(result){
+    var card = result.card;
+    return '<button class="card-item crossref-result" onclick="chooseCrossReference(\''+fromUid+'\',\''+card.uid+'\')">' +
+      '<span class="sid">'+esc(card.sid)+'</span> <span class="text">'+esc(truncate(card.text,60))+'</span>' +
+    '</button>';
+  }).join('') : '<div style="color:var(--ink-dim);font-size:0.85rem;padding:12px 0">Keine Treffer</div>';
+}
+
+function chooseCrossReference(fromUid, toUid) {
+  var before = manualRelationBetweenCards(fromUid, toUid);
+  var relation = createManualCrossReference(fromUid, toUid);
+  if (!relation) return;
+  returnCardModalFocusToTree();
+  closeModal();
+  renderCards();
+  if (!before) toast('Verweis hinzugefügt');
 }
 
 /* ═══ CARD MODALS ═══ */
@@ -2347,7 +2540,7 @@ function renderBrainstormConnections() {
     return;
   }
   var c = findCard(brainstormActiveUid);
-  var rels = relationsForCard(brainstormActiveUid);
+  var rels = brainstormRelationsForCard(brainstormActiveUid);
 
   var html = '<div class="focus-card-box">' +
     '<div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-dim);margin-bottom:4px;font-weight:500">Fokus</div>' +
