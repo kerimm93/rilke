@@ -13,6 +13,7 @@ function section(start, end) {
 const source = [
   section('var _modalAutofocusTimer', 'function openSettingsModal()'),
   section('function renderCards()', 'function renderCardDetail()'),
+  section('function renderManualCrossReferences(', '/* ═══ CARD MODALS'),
   section('function openNewCardModal(', 'function generateJitter()'),
   section('function openNewCardFromRelation(', 'function doCreateCardFromRel('),
   section('function openNewCompModal(', 'function doCreateComp('),
@@ -49,6 +50,7 @@ textArea.selectionStart = textArea.value.length;
 textArea.selectionEnd = textArea.value.length;
 const commentArea = {value:''};
 const statusSelect = {value:'active'};
+const cardSearchInput = {value:''};
 const titleInput = focusable('composition title');
 titleInput.value = 'Composition';
 let modalHtml = '';
@@ -102,7 +104,7 @@ const context = {
   },
   setTimeout:(fn, delay)=>{ const timer = {id:nextTimerId++, fn, delay:delay || 0, cancelled:false}; timers.push(timer); return timer.id; },
   clearTimeout:id=>{ const timer = timers.find(item=>item.id === id); if (timer) timer.cancelled = true; },
-  $:id=>id === 'cards-tree' ? container : id === 'modal-overlay' ? overlay : id === 'modal-body' ? modalBody : id === 'm-text' ? (textArea.isConnected ? textArea : null) : id === 'm-comment' ? commentArea : id === 'm-status' ? statusSelect : id === 'm-title' ? (titleInput.isConnected ? titleInput : null) : null,
+  $:id=>id === 'cards-tree' ? container : id === 'card-search' ? cardSearchInput : id === 'modal-overlay' ? overlay : id === 'modal-body' ? modalBody : id === 'm-text' ? (textArea.isConnected ? textArea : null) : id === 'm-comment' ? commentArea : id === 'm-status' ? statusSelect : id === 'm-title' ? (titleInput.isConnected ? titleInput : null) : null,
   rootCards:()=>cards.filter(c=>!c.parentUid&&c.status!=='archived').sort((a,b)=>a.order-b.order),
   childrenOf:uid=>cards.filter(c=>c.parentUid===uid&&c.status!=='archived').sort((a,b)=>a.order-b.order),
   allActiveCards:()=>cards.filter(c=>c.status!=='archived'),
@@ -154,6 +156,19 @@ context.renderCards();
 assert.equal(context.UI.selectedCardUid, '1');
 assert.equal(treeItems.filter(item=>item.tabIndex === 0).length, 1);
 assert.equal(treeItems.find(item=>item.tabIndex === 0).dataset.cardTreeUid, '1');
+
+// Following a cross-reference deliberately leaves a card-list filter so its target can render and receive focus.
+context.UI.searchQuery = 'Root one';
+cardSearchInput.value = 'Root one';
+context.UI.selectedCardUid = '1';
+context.renderCards();
+assert.equal(treeItems.some(item=>item.dataset.cardTreeUid === '2'), false);
+assert.equal(context.followCrossReference('2'), true);
+assert.equal(context.UI.searchQuery, '');
+assert.equal(cardSearchInput.value, '');
+assert.equal(context.UI.selectedCardUid, '2');
+assert.equal(treeItems.some(item=>item.dataset.cardTreeUid === '2'), true);
+assert.equal(context.document.activeElement.dataset.cardTreeUid, '2');
 
 // Main-tree pointer selection focuses the replacement node created by the rerender.
 assert.match(html, /data-card-tree-uid=.*onclick="selectTreeCard\(/);
