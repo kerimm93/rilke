@@ -144,6 +144,10 @@ a{color:var(--accent);text-decoration:none}
 .comp-card .handle{cursor:grab;color:var(--ink-dim);user-select:none;font-size:1.1rem;line-height:1}
 .comp-card .text{flex:1;font-size:0.88rem}
 .comp-card .sid{font-family:var(--mono);font-size:0.7rem;color:var(--ink-dim);white-space:nowrap}
+.comp-picker-item{display:block;width:100%;text-align:left}
+.comp-picker-item:disabled{cursor:default;color:var(--ink);opacity:1}
+.comp-picker-item:disabled:hover{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.comp-picker-status{display:block;margin-top:4px;font-size:0.72rem;color:var(--ink-light)}
 
 .preview-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px;line-height:1.8;font-size:0.95rem;white-space:pre-wrap;min-height:120px;font-family:var(--serif)}
 
@@ -2710,7 +2714,7 @@ function removeCompCard(compUid, idx) {
   if (!ensureStateWritable()) return;
   var comp = findComp(compUid); if (!comp) return;
   comp.cardUids.splice(idx, 1); comp.updatedAt = now();
-  saveDebounced(); renderCompDetail(); renderCompPreview();
+  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker();
 }
 
 function addCardToComp(cardUid) {
@@ -2719,17 +2723,35 @@ function addCardToComp(cardUid) {
   if (!comp) { toast('Erst eine Komposition ausw\u00e4hlen'); return; }
   if (comp.cardUids.indexOf(cardUid) >= 0) { toast('Karte bereits enthalten'); return; }
   comp.cardUids.push(cardUid); comp.updatedAt = now();
-  saveDebounced(); renderCompDetail(); renderCompPreview(); toast('Karte hinzugef\u00fcgt');
+  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker(); toast('Karte hinzugef\u00fcgt');
+}
+
+function compositionPickerCards(query) {
+  var active = allActiveCards();
+  var activeByUid = {};
+  active.forEach(function(card){ activeByUid[card.uid] = true; });
+  var ordered = cardTreeOrder().filter(function(card){ return activeByUid[card.uid]; });
+  var included = {};
+  ordered.forEach(function(card){ included[card.uid] = true; });
+  active.forEach(function(card){ if (!included[card.uid]) ordered.push(card); });
+  if (!String(query || '').trim()) return ordered;
+  return rankCrossReferenceCards(query, ordered).map(function(result){ return result.card; });
 }
 
 function renderCompCardPicker() {
   var el = $('comp-card-picker');
-  var q = ($('comp-card-search') || {}).value || ''; q = q.toLowerCase();
-  var cards = allActiveCards();
-  if (q) { cards = cards.filter(function(c){ return (c.text||'').toLowerCase().includes(q) || (c.sid||'').toLowerCase().includes(q); }); }
-  el.innerHTML = cards.slice(0, 30).map(function(c){
-    return '<div class="card-item" style="margin-bottom:4px;cursor:pointer" onclick="addCardToComp(\''+c.uid+'\')"><span class="sid">'+esc(c.sid)+'</span> <span class="text">'+esc(truncate(c.text,40))+'</span></div>';
-  }).join('');
+  if (!el) return;
+  var q = ($('comp-card-search') || {}).value || '';
+  var comp = findComp(UI.selectedCompositionUid);
+  var cards = compositionPickerCards(q);
+  el.innerHTML = cards.length ? cards.map(function(c){
+    var included = !!(comp && comp.cardUids.indexOf(c.uid) >= 0);
+    return '<button type="button" class="card-item comp-picker-item'+(included?' selected':'')+'" data-comp-picker-uid="'+esc(c.uid)+'"'+
+      (included ? ' disabled aria-label="'+esc(c.sid)+' \u2013 bereits enthalten"' : ' onclick="addCardToComp(\''+c.uid+'\')"')+'>'+
+      '<span class="sid">'+esc(c.sid)+'</span> <span class="text">'+esc(truncate(c.text,40))+'</span>'+
+      (included ? '<span class="comp-picker-status">\u2713 Bereits enthalten</span>' : '')+
+    '</button>';
+  }).join('') : '<div style="color:var(--ink-dim);font-size:0.85rem;padding:12px 0">Keine Treffer</div>';
 }
 
 function renderCompPreview() {
