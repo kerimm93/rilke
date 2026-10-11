@@ -63,6 +63,8 @@ a{color:var(--accent);text-decoration:none}
 .detail-text{font-size:1rem;line-height:1.6;white-space:pre-wrap}
 .detail-comment{font-size:0.9rem;color:var(--ink-light);font-style:italic;line-height:1.5;white-space:pre-wrap}
 .detail-meta{font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim)}
+.btn.composition-backlink{display:block;width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere;margin-top:6px}
+.composition-backlink:focus-visible,#comp-detail-title:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 
 /* ═══ BUTTONS ═══ */
 .btn{padding:6px 14px;border:1px solid var(--border);background:var(--surface);border-radius:var(--r);font-size:0.82rem;color:var(--ink-light);transition:all .12s;display:inline-flex;align-items:center;gap:5px}
@@ -1833,6 +1835,46 @@ function rankCrossReferenceCards(query, cards) {
 // ─── Composition helpers ───
 function findComp(u) { return S.compositions.find(function(c){return c.uid===u}); }
 
+function compositionsForCard(cardUid) {
+  return (Array.isArray(S.compositions) ? S.compositions : []).filter(function(comp){
+    return comp && Array.isArray(comp.cardUids) && comp.cardUids.indexOf(cardUid) >= 0;
+  });
+}
+
+function compositionDisplayTitle(comp) {
+  return typeof comp.title === 'string' && comp.title.trim() ? comp.title : 'Unbenannte Komposition';
+}
+
+function openCompositionFromCard(compUid) {
+  var comp = (Array.isArray(S.compositions) ? S.compositions : []).find(function(item){
+    return item && item.uid === compUid;
+  });
+  if (!comp) return;
+  UI.selectedCompositionUid = compUid;
+  switchTab('composition');
+  var title = $('comp-detail-title');
+  if (title) title.focus();
+}
+
+function renderCompositionBacklinks(compositions) {
+  var container = $('card-composition-backlinks');
+  if (!container) return;
+  var label = document.createElement('div');
+  label.className = 'detail-label';
+  label.textContent = 'Verwendet in';
+  container.appendChild(label);
+  compositions.forEach(function(comp){
+    var title = compositionDisplayTitle(comp);
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn composition-backlink';
+    button.textContent = '↗ ' + title;
+    button.setAttribute('aria-label', 'Komposition ' + title + ' öffnen');
+    button.addEventListener('click', function(){ openCompositionFromCard(comp.uid); });
+    container.appendChild(button);
+  });
+}
+
 // ─── Tab switching ───
 function switchTab(tab) {
   UI.tab = tab;
@@ -2146,15 +2188,18 @@ function selectTreeCard(cardUid) { UI.selectedCardUid = cardUid; renderCards(); 
 function renderCardDetail() {
   var c = findCard(UI.selectedCardUid);
   if (!c) { $('cards-empty').style.display = ''; $('card-detail-content').style.display = 'none'; return; }
+  var compositions = compositionsForCard(c.uid);
   $('cards-empty').style.display = 'none';
   var el = $('card-detail-content'); el.style.display = '';
   el.innerHTML =
     '<div class="detail-section"><div class="detail-label">ID: <span class="detail-meta">'+esc(c.sid)+' · '+esc(c.uid)+'</span></div></div>' +
     '<div class="detail-section"><div class="detail-label">Text</div><div class="detail-text">'+esc(c.text)+'</div></div>' +
     (c.comment ? '<div class="detail-section"><div class="detail-label">Kommentar</div><div class="detail-comment">'+esc(c.comment)+'</div></div>' : '') +
+    (compositions.length ? '<div class="detail-section" id="card-composition-backlinks"></div>' : '') +
     '<div class="detail-section"><div class="detail-label">Status</div><span class="status-dot '+c.status+'"></span> '+c.status+'</div>' +
     (c.parentUid ? '<div class="detail-section"><div class="detail-label">Elternkarte</div><div class="card-item" onclick="selectCard(\''+c.parentUid+'\')"><span class="sid">'+esc((findCard(c.parentUid)||{}).sid||'')+'</span> <span class="text">'+esc(truncate((findCard(c.parentUid)||{}).text||'',40))+'</span></div></div>' : '') +
     '<div class="detail-section"><div class="detail-label">Erstellt</div><div class="detail-meta">'+esc(c.createdAt)+'</div></div>';
+  renderCompositionBacklinks(compositions);
 }
 
 function renderCardActions() {
@@ -2694,7 +2739,7 @@ function renderCompDetail() {
   }).join('');
   el.innerHTML =
     '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
-      '<div style="font-size:1.05rem;font-weight:600">'+esc(comp.title)+'</div>' +
+      '<h2 id="comp-detail-title" tabindex="-1" style="font-size:1.05rem;font-weight:600">'+esc(compositionDisplayTitle(comp))+'</h2>' +
       '<button class="btn btn-sm" onclick="openEditCompModal(\''+comp.uid+'\')">\u270f</button>' +
       '<button class="btn btn-sm btn-danger" onclick="confirmDeleteComp(\''+comp.uid+'\')">\u2715</button>' +
     '</div>' +
