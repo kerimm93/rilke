@@ -29,30 +29,21 @@ function functionSource(name) {
 }
 
 const names = [
-  'normalizeStateObject', 'syncFail', 'buildRilkeSyncState',
+  'isCompositionStatus', 'compositionStatus', 'compositionNote', 'createDefaultState', 'cloneState', 'stableStringify', 'normalizedStateCloneForComparison', 'stateComparableSnapshot', 'getComparableStateString', 'fingerprintComparableState', 'isCredentialKey', 'getObjectFreshness', 'mergeObjects', 'entityMap', 'mergeDeletedIds', 'chooseArchivedRecoveryVersion', 'applyMergedTombstone', 'mergeEntityArray', 'normalizeStateObject', 'syncFail', 'buildRilkeSyncState',
   'buildRilkeSyncComparableState', 'uniqueFingerprintList',
   'boundedAncestorFingerprints', 'buildSyncMetaForState',
   'buildRilkeSyncPayload', 'validateSyncMeta', 'assertNoCredentialKeys',
   'validIso', 'validateSyncPayload', 'validateLocalSyncPayload',
-  'writeWithVerify'
+  'makeWriteResult', 'writeWithVerify'
 ];
 
 let encrypted = 0;
 let patched = 0;
-const cloneState = value => JSON.parse(JSON.stringify(value));
-const stableStringify = value => JSON.stringify(value);
-const fingerprintComparableState = value => JSON.stringify(value);
-const createDefaultState = () => ({cards:[], pairRelations:[], compositions:[], matrixSessions:[], deletedIds:{}, config:{}});
 const context = {
   console,
   SYNC_PAYLOAD_FORMAT:'rilke-sync',
   SYNC_VERSION:1,
-  cloneState,
-  stableStringify,
-  fingerprintComparableState,
-  createDefaultState,
   normalizeSid:value=>value,
-  isCredentialKey:()=>false,
   getDeviceId:()=> 'test-device',
   getDeviceName:()=> 'Test',
   now:()=> '2026-09-29T00:00:00.000Z',
@@ -87,7 +78,7 @@ const valid = {
   uid:'comp_valid', title:'Gedicht', cardUids:['a', 'b', 'c'],
   createdAt:'2026-01-03T00:00:00.000Z', updatedAt:'2026-01-04T00:00:00.000Z', historicalField:'keep'
 };
-const validBefore = cloneState(valid);
+const validBefore = context.cloneState(valid);
 const validArray = valid.cardUids;
 context.normalizeStateObject(stateWith([valid]), {silent:true});
 assert.deepEqual(valid, validBefore);
@@ -108,6 +99,54 @@ assert.deepEqual(Array.from(materialized.compositions[0].cardUids), ['a', 'b', '
   );
   assert.equal(encrypted, 0, 'invalid local payload must fail before encryption');
   assert.equal(patched, 0, 'invalid local payload must not reach patchRemote');
+
+  const note = '  Übergang prüfen.\n\n<script>alert("test")</script>  ';
+  for (const status of ['draft','finished','published']) {
+    const entity = {...valid, note, status};
+    const payload = context.buildRilkeSyncPayload(stateWith([entity]), context.now(), {});
+    const checked = context.validateSyncPayload(payload);
+    assert.equal(checked.compositions[0].note, note);
+    assert.equal(checked.compositions[0].status, status);
+    assert.equal(checked.compositions[0].historicalField, 'keep');
+  }
+  const legacyPayload = context.buildRilkeSyncPayload(stateWith([valid]), context.now(), {});
+  const legacy = context.validateSyncPayload(legacyPayload).compositions[0];
+  assert(!Object.hasOwn(legacy,'note'));
+  assert(!Object.hasOwn(legacy,'status'));
+  const legacyBefore = JSON.stringify(legacy);
+  assert.equal(context.compositionNote(legacy),'');
+  assert.equal(context.compositionStatus(legacy),'draft');
+  assert.equal(JSON.stringify(legacy),legacyBefore);
+  for (const [field, values] of [['note',[null,42,[],{}]],['status',[null,42,[],{},'active','archived','invalid']]]) {
+    for (const value of values) {
+      const state = stateWith([{...valid,[field]:value}]);
+      const payload = context.buildRilkeSyncPayload(state, context.now(), {});
+      assert.throws(()=>context.validateSyncPayload(payload), e=>e.phase==='Payload-Validierung');
+      await assert.rejects(context.writeWithVerify(state,{initialized:false},'gist','token','passphrase',{}),e=>e.phase==='Lokaler Sync-State ungültig');
+      assert.equal(encrypted,0);
+      assert.equal(patched,0);
+    }
+  }
+  const original = stateWith([valid]);
+  const noted = stateWith([{...valid,note}]);
+  const published = stateWith([{...valid,status:'published'}]);
+  for (const modified of [noted,published]) {
+    assert.notEqual(context.stableStringify(context.buildRilkeSyncComparableState(original)),context.stableStringify(context.buildRilkeSyncComparableState(modified)));
+    assert.notEqual(context.fingerprintComparableState(original),context.fingerprintComparableState(modified));
+  }
+  assert.notEqual(context.fingerprintComparableState(original),context.fingerprintComparableState(stateWith([{...valid,status:'draft'}])));
+  const newer = {...valid,note,status:'published',updatedAt:'2026-02-01T00:00:00.000Z'};
+  for(const pair of [[valid,newer],[newer,valid]]) {
+    const merged = context.mergeEntityArray([pair[0]],[pair[1]],{},'compositions');
+    assert.equal(merged[0].note,note);
+    assert.equal(merged[0].status,'published');
+  }
+  assert.throws(()=>context.mergeObjects(valid,{...valid,note},'compositions'),/Freshness/);
+  assert.equal(context.mergeEntityArray([valid],[newer],{[valid.uid]:'2026-03-01T00:00:00.000Z'},'compositions').length,0);
+  assert.throws(()=>context.mergeEntityArray([valid],[newer],{[valid.uid]:'2026-01-15T00:00:00.000Z'},'compositions'),/Delete-vs-Edit/);
+  const result = await context.writeWithVerify(noted,{initialized:true,state:context.cloneState(noted),revision:'same'},'gist','token','passphrase',{});
+  assert.equal(result.kind,'noop');
+  assert.equal(encrypted,0); assert.equal(patched,0);
   console.log('composition sync smoke tests passed');
 })().catch(error => {
   console.error(error);

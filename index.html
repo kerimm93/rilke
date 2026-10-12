@@ -16,6 +16,7 @@
   --ink:#2a2a2a;--ink-light:#6b6b5a;--ink-dim:#9a9278;
   --accent:#c9a227;--accent-soft:#e8d98a;
   --red:#c75c5c;--green:#6f9e6e;
+  --composition-purple:#8665a8;--composition-glow:rgba(134,101,168,0.22);
   --neighbor-bg:#f4f8f0;--neighbor-border:#b8d4a8;
   --body:'Helvetica Neue',Helvetica,Arial,sans-serif;
   --mono:'Courier New',Courier,monospace;
@@ -52,6 +53,11 @@ a{color:var(--accent);text-decoration:none}
 .card-item.selected{border-color:var(--accent);background:var(--surface-2);box-shadow:0 0 0 2px var(--accent-soft)}
 .card-item[data-card-tree-uid]:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .card-item[data-card-tree-uid].selected::before{content:'›';display:inline-block;margin-right:5px;font-weight:700;color:var(--ink)}
+.card-item[data-card-tree-uid].composition-unpublished{--usage-color:var(--composition-purple);--usage-glow:var(--composition-glow)}
+.card-item[data-card-tree-uid].composition-published{--usage-color:var(--green);--usage-glow:transparent}
+.card-item[data-card-tree-uid].composition-unpublished,.card-item[data-card-tree-uid].composition-published{border-color:var(--usage-color);box-shadow:0 0 5px 1px var(--usage-glow),var(--shadow)}
+.card-item[data-card-tree-uid].composition-unpublished:hover,.card-item[data-card-tree-uid].composition-published:hover{box-shadow:0 0 5px 1px var(--usage-glow),var(--shadow-lg)}
+.card-item[data-card-tree-uid].composition-unpublished.selected,.card-item[data-card-tree-uid].composition-published.selected{box-shadow:0 0 0 2px var(--accent-soft),0 0 6px 3px var(--usage-glow)}
 .card-item .sid{font-family:var(--mono);font-size:0.75rem;color:var(--ink-dim);margin-right:6px}
 .card-item .text{font-size:0.9rem;color:var(--ink)}
 .card-item .comment{font-size:0.8rem;color:var(--ink-dim);margin-top:4px;font-style:italic}
@@ -81,6 +87,7 @@ a{color:var(--accent);text-decoration:none}
 .field label{display:block;font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-dim);margin-bottom:4px;font-weight:500}
 .field input,.field textarea,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);font-size:0.9rem;outline:none;transition:border-color .12s}
 .field input:focus,.field textarea:focus{border-color:var(--accent)}
+.field select:focus-visible{border-color:var(--accent);outline:2px solid var(--ink);outline-offset:2px}
 .field textarea{resize:vertical;min-height:80px;line-height:1.5}
 
 /* ═══ SEARCH ═══ */
@@ -316,6 +323,7 @@ function createDefaultState() {
 }
 
 var S = createDefaultState();
+var _compositionMetadataSaving = false;
 
 var UI = {
   tab: 'cards',
@@ -996,6 +1004,7 @@ function isStateWritable() {
 }
 
 function ensureStateWritable() {
+  if (_compositionMetadataSaving) { toast('Komposition wird gespeichert – bitte kurz warten.'); return false; }
   if (_syncInProgress) { toast('Sync läuft – Änderungen sind kurzzeitig gesperrt.'); return false; }
   if (isStateWritable()) return true;
   toast('Nur-Lese-Modus: Bitte ZIP-Backup exportieren und das Speicherproblem beheben.');
@@ -1841,6 +1850,51 @@ function compositionsForCard(cardUid) {
   });
 }
 
+function compositionNote(comp) {
+  return comp && typeof comp.note === 'string' ? comp.note : '';
+}
+
+function isCompositionStatus(value) {
+  return value === 'draft' || value === 'finished' || value === 'published';
+}
+
+function compositionStatus(comp) {
+  return comp && isCompositionStatus(comp.status) ? comp.status : 'draft';
+}
+
+function compositionStatusLabel(comp) {
+  return {draft:'Entwurf', finished:'Fertig', published:'Veröffentlicht'}[compositionStatus(comp)];
+}
+
+function compositionUsageLookup() {
+  var lookup = new Map();
+  (Array.isArray(S.compositions) ? S.compositions : []).forEach(function(comp){
+    if (!comp || !Array.isArray(comp.cardUids)) return;
+    var usage = compositionStatus(comp) === 'published' ? 'published' : 'unpublished';
+    comp.cardUids.forEach(function(cardUid){
+      if (lookup.get(cardUid) !== 'published') lookup.set(cardUid, usage);
+    });
+  });
+  return lookup;
+}
+
+function compositionUsageDescription(usage) {
+  return usage === 'published' ? 'In veröffentlichter Komposition verwendet' :
+    usage === 'unpublished' ? 'In unveröffentlichter Komposition verwendet' : '';
+}
+
+function refreshCompositionCardUsage() {
+  if (UI.tab !== 'cards') return;
+  var lookup = compositionUsageLookup();
+  document.querySelectorAll('#cards-tree [data-card-tree-uid]').forEach(function(node){
+    var usage = lookup.get(node.dataset.cardTreeUid);
+    node.classList.toggle('composition-published', usage === 'published');
+    node.classList.toggle('composition-unpublished', usage === 'unpublished');
+    if (usage) node.setAttribute('aria-description', compositionUsageDescription(usage));
+    else node.removeAttribute('aria-description');
+  });
+}
+
 function compositionDisplayTitle(comp) {
   return typeof comp.title === 'string' && comp.title.trim() ? comp.title : 'Unbenannte Komposition';
 }
@@ -1868,8 +1922,8 @@ function renderCompositionBacklinks(compositions) {
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn composition-backlink';
-    button.textContent = '↗ ' + title;
-    button.setAttribute('aria-label', 'Komposition ' + title + ' öffnen');
+    button.textContent = '↗ ' + title + ' · ' + compositionStatusLabel(comp);
+    button.setAttribute('aria-label', 'Komposition ' + title + ', ' + compositionStatusLabel(comp) + ', öffnen');
     button.addEventListener('click', function(){ openCompositionFromCard(comp.uid); });
     container.appendChild(button);
   });
@@ -2061,7 +2115,7 @@ function remoteIncludesFingerprint(remote, fingerprint){ fingerprint=String(fing
 function lineageForWrite(remote, localFingerprint, lastFingerprint, mode){ var parents=[]; var ancestors=[]; var pinned=[]; if(remote&&remote.initialized&&remote.fingerprint){ parents.push(remote.fingerprint); ancestors=ancestors.concat(remote.syncMeta&&remote.syncMeta.ancestorFingerprints||[], [remote.fingerprint]); } if(mode==='merge'&&localFingerprint){ parents.push(localFingerprint); ancestors.push(localFingerprint); } if(lastFingerprint){ pinned.push(lastFingerprint); ancestors.push(lastFingerprint); } return {parentFingerprints:uniqueFingerprintList(parents),ancestorFingerprints:boundedAncestorFingerprints(ancestors,pinned,'',64),pinnedAncestorFingerprints:pinned}; }
 function assertNoCredentialKeys(obj, path){ if(Array.isArray(obj)){ obj.forEach(function(v,i){assertNoCredentialKeys(v,path+'['+i+']')}); return;} if(obj&&typeof obj==='object'){ Object.keys(obj).forEach(function(k){ if(isCredentialKey(k)) syncFail('Payload-Validierung','Credential-ähnlicher Schlüssel im Remote-State: '+k); assertNoCredentialKeys(obj[k],path+'.'+k); }); } }
 function validIso(s){ return typeof s==='string' && !isNaN(Date.parse(s)); }
-function validateSyncPayload(payload){ if(!payload||typeof payload!=='object'||Array.isArray(payload)) syncFail('Payload-Validierung','Payload ist kein Objekt.'); if(payload.format!==SYNC_PAYLOAD_FORMAT) syncFail('Payload-Validierung','Falsches Payload-Format.'); if(!Number.isInteger(payload.syncVersion)) syncFail('Payload-Validierung','syncVersion fehlt oder ist ungültig.'); if(payload.syncVersion>SYNC_VERSION) syncFail('Payload-Validierung','Eine neuere Rilke-Version hat diesen Gist geschrieben.'); if(payload.syncVersion!==SYNC_VERSION) syncFail('Payload-Validierung','Nicht unterstützte syncVersion.'); var st=payload.state; if(!st||typeof st!=='object'||Array.isArray(st)) syncFail('Payload-Validierung','state ist kein Objekt.'); assertNoCredentialKeys(st,'state'); ['cards','pairRelations','compositions'].forEach(function(k){ if(!Array.isArray(st[k])) syncFail('Payload-Validierung',k+' ist kein Array.'); }); if(!st.deletedIds||typeof st.deletedIds!=='object'||Array.isArray(st.deletedIds)) syncFail('Payload-Validierung','deletedIds ist kein Objekt.'); if(!st.config||typeof st.config!=='object'||Array.isArray(st.config)) syncFail('Payload-Validierung','config ist kein Objekt.'); Object.keys(st.deletedIds).forEach(function(k){ if(!validIso(st.deletedIds[k])) syncFail('Payload-Validierung','Ungültiger Tombstone für '+k); }); function unique(arr,name,check){ var seen={}; arr.forEach(function(x){ if(!x||typeof x!=='object'||!String(x.uid||'').trim()) syncFail('Payload-Validierung',name+' ohne UID.'); if(seen[x.uid]) syncFail('Payload-Validierung','Doppelte UID in '+name+': '+x.uid); seen[x.uid]=true; if(check) check(x); }); } unique(st.cards,'cards'); unique(st.pairRelations,'pairRelations',function(r){ if(!String(r.fromCardUid||'').trim()||!String(r.toCardUid||'').trim()) syncFail('Payload-Validierung','Relation ohne verwendbare Kartenreferenzen.'); }); unique(st.compositions,'compositions',function(c){ if(!Array.isArray(c.cardUids)) syncFail('Payload-Validierung','Komposition ohne cardUids-Array.'); }); var clean={cards:cloneState(st.cards),pairRelations:cloneState(st.pairRelations),compositions:cloneState(st.compositions),deletedIds:cloneState(st.deletedIds),config:{}}; ['appName','matrixCols','matrixRows','exportMode','storageMode'].forEach(function(k){ if(st.config[k]!==undefined) clean.config[k]=st.config[k]; }); var full=createDefaultState(); Object.assign(full, clean); normalizeStateObject(full,{silent:true}); var expectedFp=fingerprintComparableState(buildRilkeSyncComparableState(full)); full._syncMeta = validateSyncMeta(payload.syncMeta, expectedFp); return full; }
+function validateSyncPayload(payload){ if(!payload||typeof payload!=='object'||Array.isArray(payload)) syncFail('Payload-Validierung','Payload ist kein Objekt.'); if(payload.format!==SYNC_PAYLOAD_FORMAT) syncFail('Payload-Validierung','Falsches Payload-Format.'); if(!Number.isInteger(payload.syncVersion)) syncFail('Payload-Validierung','syncVersion fehlt oder ist ungültig.'); if(payload.syncVersion>SYNC_VERSION) syncFail('Payload-Validierung','Eine neuere Rilke-Version hat diesen Gist geschrieben.'); if(payload.syncVersion!==SYNC_VERSION) syncFail('Payload-Validierung','Nicht unterstützte syncVersion.'); var st=payload.state; if(!st||typeof st!=='object'||Array.isArray(st)) syncFail('Payload-Validierung','state ist kein Objekt.'); assertNoCredentialKeys(st,'state'); ['cards','pairRelations','compositions'].forEach(function(k){ if(!Array.isArray(st[k])) syncFail('Payload-Validierung',k+' ist kein Array.'); }); if(!st.deletedIds||typeof st.deletedIds!=='object'||Array.isArray(st.deletedIds)) syncFail('Payload-Validierung','deletedIds ist kein Objekt.'); if(!st.config||typeof st.config!=='object'||Array.isArray(st.config)) syncFail('Payload-Validierung','config ist kein Objekt.'); Object.keys(st.deletedIds).forEach(function(k){ if(!validIso(st.deletedIds[k])) syncFail('Payload-Validierung','Ungültiger Tombstone für '+k); }); function unique(arr,name,check){ var seen={}; arr.forEach(function(x){ if(!x||typeof x!=='object'||!String(x.uid||'').trim()) syncFail('Payload-Validierung',name+' ohne UID.'); if(seen[x.uid]) syncFail('Payload-Validierung','Doppelte UID in '+name+': '+x.uid); seen[x.uid]=true; if(check) check(x); }); } unique(st.cards,'cards'); unique(st.pairRelations,'pairRelations',function(r){ if(!String(r.fromCardUid||'').trim()||!String(r.toCardUid||'').trim()) syncFail('Payload-Validierung','Relation ohne verwendbare Kartenreferenzen.'); }); unique(st.compositions,'compositions',function(c){ if(!Array.isArray(c.cardUids)) syncFail('Payload-Validierung','Komposition ohne cardUids-Array.'); if(Object.prototype.hasOwnProperty.call(c,'note') && typeof c.note!=='string') syncFail('Payload-Validierung','Ungültige Kompositionsnotiz.'); if(Object.prototype.hasOwnProperty.call(c,'status') && !isCompositionStatus(c.status)) syncFail('Payload-Validierung','Ungültiger Kompositions-Werkstatus.'); }); var clean={cards:cloneState(st.cards),pairRelations:cloneState(st.pairRelations),compositions:cloneState(st.compositions),deletedIds:cloneState(st.deletedIds),config:{}}; ['appName','matrixCols','matrixRows','exportMode','storageMode'].forEach(function(k){ if(st.config[k]!==undefined) clean.config[k]=st.config[k]; }); var full=createDefaultState(); Object.assign(full, clean); normalizeStateObject(full,{silent:true}); var expectedFp=fingerprintComparableState(buildRilkeSyncComparableState(full)); full._syncMeta = validateSyncMeta(payload.syncMeta, expectedFp); return full; }
 function validateLocalSyncPayload(payload){ try { return validateSyncPayload(payload); } catch(e) { var message=e&&e.message?e.message:String(e); syncFail('Lokaler Sync-State ungültig',message.replace(/^\[[^\]]+\]\s*/,'')); } }
 function isUninitializedGistText(text){ return text===null||text===undefined||String(text).trim()===''||String(text).trim()==='{}'; }
 function githubHeaders(token, includeContentType){ var h={Authorization:'token '+token,Accept:'application/vnd.github+json'}; if(includeContentType) h['Content-Type']='application/json'; return h; }
@@ -2131,7 +2185,7 @@ async function processPendingSyncRevisions(localSnapshot, gistId, token, passphr
 async function writeWithVerify(finalState, originalRemote, gistId, token, passphrase, lineageOptions){ if(originalRemote.initialized && stableStringify(buildRilkeSyncComparableState(finalState))===stableStringify(buildRilkeSyncComparableState(originalRemote.state))) return makeWriteResult('noop',{baselineState:finalState,baselineFingerprint:fingerprintComparableState(buildRilkeSyncComparableState(finalState)),baselineRevision:originalRemote.revision}); var expectedFp=fingerprintComparableState(buildRilkeSyncComparableState(finalState)); var payload=buildRilkeSyncPayload(finalState, now(), lineageOptions || {}); validateLocalSyncPayload(payload); var env=await encryptSyncPayload(payload,passphrase); var text=JSON.stringify(env,null,2); setSyncUiPhase('Baseline prüfen'); var rechecked=await preflightRecheck(originalRemote,gistId,token,passphrase); var observedRevision=rechecked.revision; if(rechecked.initialized && stableStringify(buildRilkeSyncComparableState(finalState))===stableStringify(buildRilkeSyncComparableState(rechecked.state))) return makeWriteResult('noop',{baselineState:finalState,baselineFingerprint:expectedFp,baselineRevision:observedRevision}); setSyncUiPhase('Remote schreiben'); var patchInfo=await patchRemote(gistId,token,text); setSyncUiPhase('Write verifizieren'); var ownRemote=await identifyOwnWrittenRevision(gistId,token,passphrase,text,finalState,expectedFp,observedRevision,patchInfo.revision); var ownRevision=ownRemote.revision;
   // Der Gist-Endpunkt besitzt keinen atomaren Write-Guard. Erfolg bedeutet nur, dass bis zur abschließenden Revisionsprüfung keine unbekannten Gist-Revisionen ignoriert wurden; spätere Writes erkennt der nächste manuelle Sync.
   var revisionMerge=await reconcileInterveningRevisions(finalState,rechecked,ownRemote,gistId,token,passphrase); if(revisionMerge) return makeWriteResult('revision',{remote:ownRemote,mergedSync:revisionMerge.mergedSync,baselineFingerprint:revisionMerge.baselineFingerprint,baselineRevision:revisionMerge.baselineRevision,pendingRevisions:revisionMerge.processedRevisions,unresolvedRevisions:revisionMerge.unresolvedRevisions,maintenanceResults:revisionMerge.maintenanceResults}); await syncStabilizationDelay(); var stable=await readRemoteSync(gistId,token,passphrase); if(stable.initialized && stable.revision===ownRevision && stable.fingerprint===expectedFp) return makeWriteResult('written',{baselineState:finalState,baselineFingerprint:expectedFp,baselineRevision:ownRevision}); if(stable.initialized && stable.fingerprint===expectedFp) return makeWriteResult('written',{baselineState:finalState,baselineFingerprint:expectedFp,baselineRevision:stable.revision}); if(stable.initialized && remoteIncludesFingerprint(stable, expectedFp)) return makeWriteResult('successor',{remote:stable,baselineState:stable.state,baselineFingerprint:stable.fingerprint,baselineRevision:stable.revision}); if(stable.initialized){ var siblingMaintenance=[]; var mergedSync=mergeSyncStates(finalState, stable.state, siblingMaintenance); return makeWriteResult('sibling',{remote:stable,mergedSync:mergedSync,baselineFingerprint:stable.fingerprint,baselineRevision:stable.revision,maintenanceResults:siblingMaintenance}); } syncFail('Readback-Verify','Post-Write-Stabilisierung fand keinen initialisierten Remote-State.'); }
-async function gistSyncManual(){ if(_syncInProgress){ toast('Sync läuft bereits'); return; } _syncInProgress=true; beginSyncUiRun(); updateSyncUiDom(); try{ if(!isStateWritable()) syncFail('Konfiguration','Lokaler Speicher ist Readonly/Notfallmodus; Sync blockiert.'); var token=readLocalValue(GIST_TOKEN_KEY).trim(), gistId=readLocalValue(GIST_ID_KEY).trim(), passphrase=getSyncPassphrase(); if(!token) syncFail('Konfiguration','GitHub-Token fehlt.'); if(!gistId) syncFail('Konfiguration','Gist-ID fehlt.'); if(!passphrase) syncFail('Konfiguration','Passphrase fehlt.'); if(!window.crypto||!crypto.subtle) syncFail('Konfiguration','WebCrypto ist nicht verfügbar.'); validateLocalTombstones(); if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; await save(); } await _writeQueue; var maintenanceCandidate=cloneState(S); var initialMaintenance=runSyncCandidateMaintenance(maintenanceCandidate); if(stableStringify(stateComparableSnapshot(maintenanceCandidate))!==stableStringify(stateComparableSnapshot(S))){ await persistCandidateState(maintenanceCandidate,'lokales Persistieren'); noteSyncMaintenance(initialMaintenance); } var baseline=readConfirmedSyncBaseline(); var last=baseline.fingerprint; var lastRevision=baseline.revision; var confirmedBaseline={fingerprint:last,revision:lastRevision}; setSyncUiPhase('Remote lesen'); var remote=await readRemoteSync(gistId,token,passphrase); await _writeQueue; var localSnapshot=cloneState(S); setSyncUiPhase('Baseline prüfen'); var pendingResult=await processPendingSyncRevisions(localSnapshot,gistId,token,passphrase); if(pendingResult.changed) localSnapshot=cloneState(pendingResult.state); var pre=cloneState(localSnapshot); var localSync=buildRilkeSyncComparableState(localSnapshot); var localFp=fingerprintComparableState(localSync); var verifiedBaseline=null; if(last){ var baselineInspection=await inspectConfirmedBaselineRevisionForSync(gistId,token,passphrase,confirmedBaseline,localSnapshot,localFp,readPendingSyncRevisions()); if(baselineInspection.repaired){ last=''; lastRevision=''; confirmedBaseline={fingerprint:'',revision:''}; toast('Ungültige leere Alt-Baseline wurde zurückgesetzt.'); } else { verifiedBaseline=baselineInspection.confirmed; } } var result='No-Op'; if(!last){ if(!remote.initialized){ if(hasMeaningfulSyncContent(localSnapshot)){ var uploadSnapshot=cloneState(localSnapshot); result=await writeWithVerify(uploadSnapshot,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var succPersisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); toast(succPersisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(succPersisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var sib=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var sibMaintenance=runSyncCandidateMaintenance(sib); await persistCandidateState(sib,'lokales Persistieren'); noteSurvivingSyncMaintenance(result.maintenanceResults||[],sib); noteSyncMaintenance(sibMaintenance); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ await persistRevisionReconciliationResult(localSnapshot,result); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Sync: Lokal hochgeladen'); } } else { toast('Kein initialisierter Remote-Sync-State vorhanden; noch keine Baseline gesetzt.'); } return; } if(stableStringify(localSync)===stableStringify(buildRilkeSyncComparableState(remote.state))){ rememberConfirmedRemoteBaseline(remote); toast('Sync: No-Op, Baseline gespeichert'); return; } if(isSemanticallyEmptySyncState(remote.state)&&hasMeaningfulSyncContent(localSnapshot)){ var emptyUpload=cloneState(localSnapshot); result=await writeWithVerify(emptyUpload,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var emptySuccPersisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); toast(emptySuccPersisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(emptySuccPersisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var emptySib=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var emptySibMaintenance=runSyncCandidateMaintenance(emptySib); await persistCandidateState(emptySib,'lokales Persistieren'); noteSurvivingSyncMaintenance(result.maintenanceResults||[],emptySib); noteSyncMaintenance(emptySibMaintenance); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ await persistRevisionReconciliationResult(localSnapshot,result); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Lokal hochgeladen'); } return; } if(isSemanticallyEmptySyncState(localSnapshot)&&isSemanticallyEmptySyncState(remote.state)){ var emptyPersisted=await persistRemoteWorkingState(localSnapshot, remote.state, remote.fingerprint, { configMode:'remote',remoteRevision:remote.revision }); toast(emptyPersisted.sidChanged?'Remote übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(emptyPersisted.gcChanged?'Remote übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync: Remote-Konfiguration übernommen')); return; } if(!hasMeaningfulSyncContent(localSnapshot)&&hasMeaningfulSyncContent(remote.state)){ recommendRecoveryZipBeforeRisk('Remote-Erstübernahme'); var candPersisted=await persistRemoteWorkingState(localSnapshot, remote.state, remote.fingerprint, { configMode:'remote',remoteRevision:remote.revision }); toast(candPersisted.sidChanged?'Remote übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(candPersisted.gcChanged?'Remote übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync: Remote übernommen')); return; } syncFail('Merge','Erstsync-Konflikt: Lokaler und Remote-State enthalten unterschiedliche Daten, aber es existiert keine gemeinsame Sync-Baseline.'); }
+async function gistSyncManual(){ if(_compositionMetadataSaving){ toast('Komposition wird gespeichert – bitte kurz warten.'); return; } if(_syncInProgress){ toast('Sync läuft bereits'); return; } _syncInProgress=true; beginSyncUiRun(); updateSyncUiDom(); try{ if(!isStateWritable()) syncFail('Konfiguration','Lokaler Speicher ist Readonly/Notfallmodus; Sync blockiert.'); var token=readLocalValue(GIST_TOKEN_KEY).trim(), gistId=readLocalValue(GIST_ID_KEY).trim(), passphrase=getSyncPassphrase(); if(!token) syncFail('Konfiguration','GitHub-Token fehlt.'); if(!gistId) syncFail('Konfiguration','Gist-ID fehlt.'); if(!passphrase) syncFail('Konfiguration','Passphrase fehlt.'); if(!window.crypto||!crypto.subtle) syncFail('Konfiguration','WebCrypto ist nicht verfügbar.'); validateLocalTombstones(); if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; await save(); } await _writeQueue; var maintenanceCandidate=cloneState(S); var initialMaintenance=runSyncCandidateMaintenance(maintenanceCandidate); if(stableStringify(stateComparableSnapshot(maintenanceCandidate))!==stableStringify(stateComparableSnapshot(S))){ await persistCandidateState(maintenanceCandidate,'lokales Persistieren'); noteSyncMaintenance(initialMaintenance); } var baseline=readConfirmedSyncBaseline(); var last=baseline.fingerprint; var lastRevision=baseline.revision; var confirmedBaseline={fingerprint:last,revision:lastRevision}; setSyncUiPhase('Remote lesen'); var remote=await readRemoteSync(gistId,token,passphrase); await _writeQueue; var localSnapshot=cloneState(S); setSyncUiPhase('Baseline prüfen'); var pendingResult=await processPendingSyncRevisions(localSnapshot,gistId,token,passphrase); if(pendingResult.changed) localSnapshot=cloneState(pendingResult.state); var pre=cloneState(localSnapshot); var localSync=buildRilkeSyncComparableState(localSnapshot); var localFp=fingerprintComparableState(localSync); var verifiedBaseline=null; if(last){ var baselineInspection=await inspectConfirmedBaselineRevisionForSync(gistId,token,passphrase,confirmedBaseline,localSnapshot,localFp,readPendingSyncRevisions()); if(baselineInspection.repaired){ last=''; lastRevision=''; confirmedBaseline={fingerprint:'',revision:''}; toast('Ungültige leere Alt-Baseline wurde zurückgesetzt.'); } else { verifiedBaseline=baselineInspection.confirmed; } } var result='No-Op'; if(!last){ if(!remote.initialized){ if(hasMeaningfulSyncContent(localSnapshot)){ var uploadSnapshot=cloneState(localSnapshot); result=await writeWithVerify(uploadSnapshot,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var succPersisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); toast(succPersisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(succPersisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var sib=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var sibMaintenance=runSyncCandidateMaintenance(sib); await persistCandidateState(sib,'lokales Persistieren'); noteSurvivingSyncMaintenance(result.maintenanceResults||[],sib); noteSyncMaintenance(sibMaintenance); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ await persistRevisionReconciliationResult(localSnapshot,result); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Sync: Lokal hochgeladen'); } } else { toast('Kein initialisierter Remote-Sync-State vorhanden; noch keine Baseline gesetzt.'); } return; } if(stableStringify(localSync)===stableStringify(buildRilkeSyncComparableState(remote.state))){ rememberConfirmedRemoteBaseline(remote); toast('Sync: No-Op, Baseline gespeichert'); return; } if(isSemanticallyEmptySyncState(remote.state)&&hasMeaningfulSyncContent(localSnapshot)){ var emptyUpload=cloneState(localSnapshot); result=await writeWithVerify(emptyUpload,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var emptySuccPersisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); toast(emptySuccPersisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(emptySuccPersisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var emptySib=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var emptySibMaintenance=runSyncCandidateMaintenance(emptySib); await persistCandidateState(emptySib,'lokales Persistieren'); noteSurvivingSyncMaintenance(result.maintenanceResults||[],emptySib); noteSyncMaintenance(emptySibMaintenance); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ await persistRevisionReconciliationResult(localSnapshot,result); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Lokal hochgeladen'); } return; } if(isSemanticallyEmptySyncState(localSnapshot)&&isSemanticallyEmptySyncState(remote.state)){ var emptyPersisted=await persistRemoteWorkingState(localSnapshot, remote.state, remote.fingerprint, { configMode:'remote',remoteRevision:remote.revision }); toast(emptyPersisted.sidChanged?'Remote übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(emptyPersisted.gcChanged?'Remote übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync: Remote-Konfiguration übernommen')); return; } if(!hasMeaningfulSyncContent(localSnapshot)&&hasMeaningfulSyncContent(remote.state)){ recommendRecoveryZipBeforeRisk('Remote-Erstübernahme'); var candPersisted=await persistRemoteWorkingState(localSnapshot, remote.state, remote.fingerprint, { configMode:'remote',remoteRevision:remote.revision }); toast(candPersisted.sidChanged?'Remote übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(candPersisted.gcChanged?'Remote übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync: Remote übernommen')); return; } syncFail('Merge','Erstsync-Konflikt: Lokaler und Remote-State enthalten unterschiedliche Daten, aber es existiert keine gemeinsame Sync-Baseline.'); }
     var remoteFp=remote.fingerprint; if(remote.initialized && localFp===remoteFp){ rememberConfirmedRemoteBaseline(remote); toast('Sync: No-Op'); return; } if(remote.initialized && localFp===last && remoteFp!==last){ if(remoteIncludesFingerprint(remote,last)){ recommendRecoveryZipBeforeRisk('Remote-Änderungen übernehmen'); var adopted=await persistRemoteWorkingState(localSnapshot, remote.state, remoteFp, { configMode:'remote',remoteRevision:remote.revision }); toast(adopted.sidChanged?'Remote übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(adopted.gcChanged?'Remote übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync: Remote übernommen')); return; } await reconcileUnverifiedRemoteWithCleanLocal(localSnapshot, remote, confirmedBaseline, gistId, token, passphrase, verifiedBaseline); return; } if(!remote.initialized || (localFp!==last && remoteFp===last)){ var directSnapshot=cloneState(localSnapshot); result=await writeWithVerify(directSnapshot,remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'push')); if(result.kind==='successor'){ var succ2Persisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); toast(succ2Persisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(succ2Persisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var sib2=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var sib2Maintenance=runSyncCandidateMaintenance(sib2); await persistCandidateState(sib2,'lokales Persistieren'); noteSurvivingSyncMaintenance(result.maintenanceResults||[],sib2); noteSyncMaintenance(sib2Maintenance); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ await persistRevisionReconciliationResult(localSnapshot,result); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Lokal hochgeladen'); } return; } setSyncUiPhase('Daten abgleichen'); var sidStatsBeforeMerge=snapshotSyncMaintenance(), mergeMaintenance=[]; var mergedSync=mergeSyncStates(localSnapshot,remote.state,mergeMaintenance); var merged=materializeLocalStateFromSyncState(localSnapshot, mergedSync, { configMode:'local' }); mergeMaintenance.push(runSyncCandidateMaintenance(merged)); await persistCandidateState(merged,'lokales Persistieren'); try{ result=await writeWithVerify(cloneState(merged),remote,gistId,token,passphrase,lineageForWrite(remote, localFp, last, 'merge')); if(result.kind==='successor'){ var succ3Persisted=await persistRemoteWorkingState(localSnapshot,result.remote.state,result.baselineFingerprint,{configMode:'remote',remoteRevision:result.baselineRevision}); noteSurvivingSyncMaintenance(mergeMaintenance,succ3Persisted.candidate); toast(succ3Persisted.sidChanged?'Nachfolgende Remote-Änderung übernommen; SID-Kollisionen wurden lokal aufgelöst. Bitte erneut syncen.':(succ3Persisted.gcChanged?'Nachfolgende Remote-Änderung übernommen; lokale Relationsbereinigung gespeichert. Bitte erneut syncen.':'Sync abgeschlossen; nachfolgende Remote-Änderung übernommen.')); } else if(result.kind==='sibling'){ var sib3=materializeLocalStateFromSyncState(localSnapshot,result.mergedSync,{configMode:'local'}); var sib3Maintenance=runSyncCandidateMaintenance(sib3); await persistCandidateState(sib3,'lokales Persistieren'); rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); noteSurvivingSyncMaintenance(mergeMaintenance,sib3); noteSurvivingSyncMaintenance(result.maintenanceResults||[],sib3); noteSurvivingSyncMaintenance([sib3Maintenance],sib3); toast('Konkurrierender Remote-Write erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else if(result.kind==='revision'){ var revisionPersisted=await persistRevisionReconciliationResult(localSnapshot,result); noteSurvivingSyncMaintenance(mergeMaintenance,revisionPersisted.candidate); toast('Konkurrierende Gist-Revision erkannt. Änderungen wurden lokal zusammengeführt; Sync bitte erneut ausführen.'); } else { rememberConfirmedSyncBaseline(result.baselineFingerprint,result.baselineRevision); noteSurvivingSyncMaintenance(mergeMaintenance,merged); toast(result.kind==='noop'?'Sync: No-Op':'Sync: Zusammengeführt und synchronisiert'); } }catch(e){ if(e&&e.preserveLocalState) noteSurvivingSyncMaintenance(mergeMaintenance,S); else { var rolledBack=await rollbackLocal(pre); if(rolledBack) restoreSyncMaintenance(sidStatsBeforeMerge); } throw e; }
   }catch(e){ failSyncUi(e); var msg=(e&&e.message)||String(e); openModal('<h3>Sync fehlgeschlagen</h3><p class="detail-meta">'+esc(msg)+'</p><div class="modal-actions"><button class="btn" onclick="closeModal()">Schließen</button></div>'); } finally { _syncInProgress=false; if(_syncUiState.status==='running') failSyncUi({phase:_syncUiState.phase,message:'Der Sync wurde ohne abgeschlossenes Ergebnis beendet.'}); updateSyncUiDom(); } }
 
@@ -2144,6 +2198,7 @@ function renderCards() { renderCardsList(); renderCardDetail(); renderCardAction
 function renderCardsList() {
   var container = $('cards-tree');
   var q = (UI.searchQuery || '').toLowerCase();
+  var usageLookup = compositionUsageLookup();
   var roots = rootCards();
   if (q) {
     var matches = allActiveCards().filter(function(c){
@@ -2151,30 +2206,33 @@ function renderCardsList() {
     });
     if (matches.length > 0 && !matches.some(function(c){ return c.uid === UI.selectedCardUid; })) UI.selectedCardUid = matches[0].uid;
     container.innerHTML = matches.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">⌕</div>Keine Treffer</div>' : '';
-    matches.forEach(function(c){ container.innerHTML += cardItemHtml(c); });
+    matches.forEach(function(c){ container.innerHTML += cardItemHtml(c, usageLookup); });
     return;
   }
   var ordered = cardTreeOrder();
   if (ordered.length > 0 && !ordered.some(function(c){ return c.uid === UI.selectedCardUid; })) UI.selectedCardUid = ordered[0].uid;
   container.innerHTML = roots.length === 0 ? '<div class="empty" style="padding:20px"><div class="icon">✎</div>Noch keine Karten</div>' : '';
-  roots.forEach(function(c){ container.innerHTML += renderCardTree(c, 0); });
+  roots.forEach(function(c){ container.innerHTML += renderCardTree(c, 0, usageLookup); });
 }
 
-function renderCardTree(card, depth) {
-  var html = cardItemHtml(card);
+function renderCardTree(card, depth, usageLookup) {
+  var html = cardItemHtml(card, usageLookup);
   var children = childrenOf(card.uid);
   if (children.length > 0) {
     html += '<div class="child-indent">';
-    children.forEach(function(ch){ html += renderCardTree(ch, depth+1); });
+    children.forEach(function(ch){ html += renderCardTree(ch, depth+1, usageLookup); });
     html += '</div>';
   }
   return html;
 }
 
-function cardItemHtml(c) {
+function cardItemHtml(c, usageLookup) {
+  var usage = usageLookup && usageLookup.get(c.uid);
+  var usageClass = usage ? ' composition-' + usage : '';
+  var usageAttrs = usage ? ' aria-description="' + compositionUsageDescription(usage) + '"' : '';
   var sel = c.uid === UI.selectedCardUid ? ' selected' : '';
   var selectedAttrs = sel ? ' tabindex="0" aria-current="true"' : ' tabindex="-1"';
-  return '<div class="card-item'+sel+'" data-card-tree-uid="'+esc(c.uid)+'"'+selectedAttrs+' onclick="selectTreeCard(\''+c.uid+'\')">' +
+  return '<div class="card-item'+sel+usageClass+'" data-card-tree-uid="'+esc(c.uid)+'"'+selectedAttrs+usageAttrs+' onclick="selectTreeCard(\''+c.uid+'\')">' +
     '<span class="sid">'+esc(c.sid)+'</span>' +
     '<span class="status-dot '+c.status+'"></span>' +
     '<span class="text">'+esc(truncate(c.text, 60))+'</span>' +
@@ -2717,7 +2775,7 @@ function doCreateComp() {
   if (!ensureStateWritable()) return;
   var title = $('m-title').value.trim();
   if (!title) { toast('Titel fehlt'); return; }
-  var c = { uid: 'comp_'+uid(), title: title, cardUids: [], createdAt: now(), updatedAt: now() };
+  var c = { uid: 'comp_'+uid(), title: title, cardUids: [], note: '', status: 'draft', createdAt: now(), updatedAt: now() };
   S.compositions.push(c); UI.selectedCompositionUid = c.uid;
   saveDebounced(); closeModal(); renderComposition(); toast('Komposition erstellt');
 }
@@ -2738,12 +2796,19 @@ function renderCompDetail() {
     '</div>';
   }).join('');
   el.innerHTML =
-    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">' +
       '<h2 id="comp-detail-title" tabindex="-1" style="font-size:1.05rem;font-weight:600">'+esc(compositionDisplayTitle(comp))+'</h2>' +
       '<button class="btn btn-sm" onclick="openEditCompModal(\''+comp.uid+'\')">\u270f</button>' +
       '<button class="btn btn-sm btn-danger" onclick="confirmDeleteComp(\''+comp.uid+'\')">\u2715</button>' +
     '</div>' +
+    '<div class="field"><label for="comp-status">Werkstatus</label><select id="comp-status">' +
+      ['draft','finished','published'].map(function(status){ return '<option value="'+status+'"'+(compositionStatus(comp)===status?' selected':'')+'>'+compositionStatusLabel({status:status})+'</option>'; }).join('') +
+    '</select></div>' +
+    '<div class="detail-section"><div class="detail-label">Anmerkungen</div><div class="detail-comment">'+
+      (compositionNote(comp) ? esc(compositionNote(comp)) : 'Noch keine Anmerkungen.')+'</div></div>' +
     (cardsHtml || '<div style="color:var(--ink-dim);font-size:0.85rem;padding:20px 0">Noch keine Karten \u2014 f\u00fcge Karten \u00fcber die linke Spalte hinzu.</div>');
+  var statusControl = $('comp-status');
+  if (statusControl) statusControl.addEventListener('change', function(){ changeCompositionStatus(comp.uid, statusControl); });
 }
 
 function moveCompCard(compUid, idx, dir) {
@@ -2759,7 +2824,7 @@ function removeCompCard(compUid, idx) {
   if (!ensureStateWritable()) return;
   var comp = findComp(compUid); if (!comp) return;
   comp.cardUids.splice(idx, 1); comp.updatedAt = now();
-  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker();
+  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker(); refreshCompositionCardUsage();
 }
 
 function addCardToComp(cardUid) {
@@ -2768,7 +2833,7 @@ function addCardToComp(cardUid) {
   if (!comp) { toast('Erst eine Komposition ausw\u00e4hlen'); return; }
   if (comp.cardUids.indexOf(cardUid) >= 0) { toast('Karte bereits enthalten'); return; }
   comp.cardUids.push(cardUid); comp.updatedAt = now();
-  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker(); toast('Karte hinzugef\u00fcgt');
+  saveDebounced(); renderCompDetail(); renderCompPreview(); renderCompCardPicker(); refreshCompositionCardUsage(); toast('Karte hinzugef\u00fcgt');
 }
 
 function compositionPickerCards(query) {
@@ -3170,14 +3235,79 @@ function exportZipBackup() {
 
 function openEditCompModal(compUid) {
   var comp = findComp(compUid); if (!comp) return;
-  openModal('<h3>Komposition bearbeiten</h3><div class="field"><label>Titel</label><input id="m-title" value="'+esc(comp.title)+'"></div><div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn btn-accent" onclick="doEditComp(\''+compUid+'\')">Speichern</button></div>');
+  openModal('<h3>Komposition bearbeiten</h3><div class="field"><label for="m-title">Titel</label><input id="m-title"></div>' +
+    '<div class="field"><label for="m-comp-note">Anmerkungen</label><textarea id="m-comp-note" rows="6"></textarea></div>' +
+    '<div id="comp-save-feedback" role="status" aria-live="polite"></div>' +
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button id="comp-save" class="btn btn-accent">Speichern</button></div>');
+  $('m-title').value = typeof comp.title === 'string' ? comp.title : '';
+  $('m-comp-note').value = compositionNote(comp);
+  $('comp-save').addEventListener('click', function(){ doEditComp(compUid); });
+  scheduleModalAutofocus('m-comp-note');
 }
 
-function doEditComp(compUid) {
-  if (!ensureStateWritable()) return;
-  var comp = findComp(compUid); if (!comp) return;
-  comp.title = $('m-title').value.trim() || comp.title; comp.updatedAt = now();
-  saveDebounced(); closeModal(); renderComposition(); toast('Komposition gespeichert');
+async function persistCompositionMetadata(compUid, fields) {
+  if (_compositionMetadataSaving) return false;
+  var comp = findComp(compUid); if (!comp) return false;
+  if ((Object.prototype.hasOwnProperty.call(fields,'note') && typeof fields.note !== 'string') ||
+      (Object.prototype.hasOwnProperty.call(fields,'status') && !isCompositionStatus(fields.status))) return false;
+  var changed = Object.keys(fields).filter(function(key){
+    var previous = key === 'note' ? compositionNote(comp) : key === 'status' ? compositionStatus(comp) : comp[key];
+    return previous !== fields[key];
+  });
+  if (!changed.length) return ensureStateWritable();
+  // Retry a failed local write through the existing queue, without lifting readonly/sync guards.
+  if (_storageWriteError && _persistenceReady && !_storageReadOnly && _storageBackend === 'indexeddb' && !_syncInProgress) {
+    _compositionMetadataSaving = true;
+    var recoveryTimestamp = S._lastExported;
+    try { await save(); } catch(e) { S._lastExported = recoveryTimestamp; return false; }
+    finally { _compositionMetadataSaving = false; }
+  }
+  if (!ensureStateWritable()) return false;
+  var previous = {};
+  var previousLastExported = S._lastExported;
+  changed.concat(['updatedAt']).forEach(function(key){ previous[key] = {present:Object.prototype.hasOwnProperty.call(comp,key), value:comp[key]}; });
+  _compositionMetadataSaving = true;
+  clearTimeout(_saveTimer); _saveTimer = null;
+  changed.forEach(function(key){ comp[key] = fields[key]; });
+  comp.updatedAt = now();
+  try {
+    await save();
+  } catch(e) {
+    // Keep the draft in the modal; restore this write's entity fields and state timestamp.
+    S._lastExported = previousLastExported;
+    Object.keys(previous).forEach(function(key){
+      if (previous[key].present) comp[key] = previous[key].value;
+      else delete comp[key];
+    });
+    return false;
+  } finally { _compositionMetadataSaving = false; }
+  refreshCompositionCardUsage();
+  return true;
+}
+
+async function doEditComp(compUid) {
+  var comp = findComp(compUid); if (!comp || _compositionMetadataSaving) return;
+  var titleInput = $('m-title'), noteInput = $('m-comp-note');
+  var button = $('comp-save'), feedback = $('comp-save-feedback');
+  titleInput.readOnly = true; noteInput.readOnly = true;
+  if (button) button.disabled = true;
+  if (feedback) feedback.textContent = 'Wird gespeichert…';
+  var saved = await persistCompositionMetadata(compUid, {title:titleInput.value.trim() || comp.title, note:noteInput.value});
+  titleInput.readOnly = false; noteInput.readOnly = false;
+  if (button) button.disabled = false;
+  // Do not close or overwrite a different modal opened while the write was pending.
+  if ($('m-comp-note') !== noteInput) return;
+  if (!saved) { if (feedback) feedback.textContent = 'Nicht gespeichert. Bitte erneut speichern; Ihre Eingabe bleibt erhalten.'; return; }
+  closeModal(); renderComposition(); toast('Komposition gespeichert');
+}
+
+async function changeCompositionStatus(compUid, control) {
+  if (_compositionMetadataSaving) { control.value = compositionStatus(findComp(compUid)); return; }
+  var saved = await persistCompositionMetadata(compUid, {status:control.value});
+  if (!saved) {
+    control.value = compositionStatus(findComp(compUid));
+    toast('Werkstatus nicht gespeichert. Bitte erneut versuchen.');
+  }
 }
 
 function confirmDeleteComp(compUid) {
@@ -3191,7 +3321,7 @@ function doDeleteComp(compUid) {
   S.deletedIds[compUid] = now();
   S.compositions = S.compositions.filter(function(c){return c.uid!==compUid});
   if (UI.selectedCompositionUid === compUid) UI.selectedCompositionUid = '';
-  saveDebounced(); closeModal(); renderComposition(); toast('Komposition gel\u00f6scht');
+  saveDebounced(); closeModal(); renderComposition(); refreshCompositionCardUsage(); toast('Komposition gel\u00f6scht');
 }
 
 /* ═══════════════════════════════════════════

@@ -68,17 +68,18 @@ let compositionRenders = 0;
 const escapeText = value => String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 context = {
   S: {}, UI: {tab:'cards', selectedCardUid:'card', selectedCompositionUid:'', searchQuery:'keep filter'},
-  document: {createElement: tag => new Element(tag), querySelectorAll: () => tabs, activeElement:null},
+  document: {createElement: tag => new Element(tag), querySelectorAll: selector => selector.includes('data-card-tree-uid') ? [] : tabs, activeElement:null},
   $: id => nodes[id] || null,
   esc: escapeText,
   ensureStateWritable: () => true,
   save: () => { saves++; }, saveDebounced: () => { saves++; },
+  _compositionMetadataSaving:false, _storageWriteError:false, _saveTimer:null, clearTimeout(){},
   now: () => '2026-10-11T00:00:00.000Z', closeModal(){}, toast(){},
   renderCompCardPicker(){}, renderCardsList(){}, renderCardActions(){},
   renderBrainstorm(){}, shuffleBrainstorm(){}, brainstormOrder:[],
 };
 vm.createContext(context);
-const names = ['findCard', 'findComp', 'compositionsForCard', 'compositionDisplayTitle',
+const names = ['findCard', 'findComp', 'compositionNote', 'isCompositionStatus', 'compositionStatus', 'compositionStatusLabel', 'compositionUsageLookup', 'compositionUsageDescription', 'refreshCompositionCardUsage', 'persistCompositionMetadata', 'compositionsForCard', 'compositionDisplayTitle',
   'openCompositionFromCard', 'renderCompositionBacklinks', 'renderCardDetail', 'renderCards',
   'switchTab', 'renderComposition', 'renderCompList', 'renderCompDetail', 'renderCompPreview',
   'addCardToComp', 'removeCompCard', 'doEditComp', 'doDeleteComp', 'isKeyboardFormControl'];
@@ -121,7 +122,7 @@ assert.equal(buttons().length, 1);
 reset([b, composition('other', 'Andere', ['different']), a]);
 renderUnchanged();
 assert.deepEqual(Array.from(context.compositionsForCard('card'), comp => comp.uid), ['b','a']);
-assert.deepEqual(buttons().map(button => button.textContent), ['↗ Gedichtentwurf B','↗ Gedichtentwurf A']);
+assert.deepEqual(buttons().map(button => button.textContent), ['↗ Gedichtentwurf B · Entwurf','↗ Gedichtentwurf A · Entwurf']);
 assert.equal(nodes['card-composition-backlinks'].children[0].textContent, 'Verwendet in');
 const detailMarkup = nodes['card-detail-content'].innerHTML;
 assert(detailMarkup.indexOf('Kommentar') < detailMarkup.indexOf('card-composition-backlinks'));
@@ -133,7 +134,7 @@ buttons().forEach(button => {
   assert.equal(button.attributes.onclick, undefined);
   assert.equal(context.isKeyboardFormControl(button), true, 'native button must be protected by existing keyboard guard');
 });
-assert.equal(buttons()[1].attributes['aria-label'], 'Komposition Gedichtentwurf A öffnen');
+assert.equal(buttons()[1].attributes['aria-label'], 'Komposition Gedichtentwurf A, Entwurf, öffnen');
 const stateBeforeNavigation = JSON.stringify(context.S);
 buttons()[1].click();
 assert.equal(context.UI.selectedCompositionUid, 'a');
@@ -153,16 +154,18 @@ assert.equal(nodes['card-search'].value, 'keep filter');
 assert.equal(JSON.stringify(context.S), stateBeforeNavigation);
 assert.equal(saves, 0);
 
+(async function(){
 // Exercise existing mutations, then the actual tab-return path.
 nodes['m-title'] = {value:'Neuer Titel'};
-context.doEditComp('a');
+nodes['m-comp-note'] = {value:''};
+await context.doEditComp('a');
 context.switchTab('cards');
-assert.equal(buttons()[1].textContent, '↗ Neuer Titel');
+assert.equal(buttons()[1].textContent, '↗ Neuer Titel · Entwurf');
 context.UI.selectedCompositionUid = 'b';
 context.switchTab('composition');
 context.removeCompCard('b', 0);
 context.switchTab('cards');
-assert.deepEqual(buttons().map(button => button.textContent), ['↗ Neuer Titel']);
+assert.deepEqual(buttons().map(button => button.textContent), ['↗ Neuer Titel · Entwurf']);
 context.switchTab('composition');
 context.addCardToComp('card');
 context.switchTab('cards');
@@ -170,7 +173,7 @@ assert.equal(buttons().length, 2);
 context.switchTab('composition');
 context.doDeleteComp('a');
 context.switchTab('cards');
-assert.deepEqual(buttons().map(button => button.textContent), ['↗ Gedichtentwurf B']);
+assert.deepEqual(buttons().map(button => button.textContent), ['↗ Gedichtentwurf B · Entwurf']);
 assert.equal(context.S.deletedIds.a, context.now());
 assert.equal(saves, 4, 'only existing CRUD actions save');
 
@@ -180,17 +183,17 @@ reset([null, {}, {uid:'no-array', title:'No array'}, composition('invalid', 'Inv
   composition('no-title', undefined), composition('wrong-title', 42), composition('spaces', '   ')]);
 renderUnchanged();
 assert.equal(buttons().length, 4);
-assert(buttons().every(button => button.textContent === '↗ Unbenannte Komposition'));
-assert.equal(buttons()[0].attributes['aria-label'], 'Komposition Unbenannte Komposition öffnen');
+assert(buttons().every(button => button.textContent === '↗ Unbenannte Komposition · Entwurf'));
+assert.equal(buttons()[0].attributes['aria-label'], 'Komposition Unbenannte Komposition, Entwurf, öffnen');
 assert.equal(Object.hasOwn(context.S.compositions[2], 'cardUids'), false);
 
 const specialTitle = '<img src=x onerror="attack()"> & \' " >';
 const specialUid = `comp_'\"; globalThis.attacked = true; //`;
 reset([composition(specialUid, specialTitle)]);
 renderUnchanged();
-assert.equal(buttons()[0].textContent, '↗ ' + specialTitle);
+assert.equal(buttons()[0].textContent, '↗ ' + specialTitle + ' · Entwurf');
 assert.equal(buttons()[0].children.length, 0, 'title must remain text, not markup');
-assert.equal(buttons()[0].attributes['aria-label'], 'Komposition ' + specialTitle + ' öffnen');
+assert.equal(buttons()[0].attributes['aria-label'], 'Komposition ' + specialTitle + ', Entwurf, öffnen');
 const specialBefore = JSON.stringify(context.S);
 buttons()[0].click();
 assert.equal(context.UI.selectedCompositionUid, specialUid);
@@ -224,5 +227,7 @@ assert.equal(saves, 0);
 context.S = JSON.parse(original);
 context.S.compositions[0].title = 'Remote-Titel';
 context.switchTab(context.UI.tab);
-assert.equal(buttons()[0].textContent, '↗ Remote-Titel');
+assert.equal(buttons()[0].textContent, '↗ Remote-Titel · Entwurf');
 console.log('composition backlinks smoke tests passed');
+
+})().catch(error => { console.error(error); process.exitCode = 1; });
