@@ -12,6 +12,7 @@ function section(start, end) {
 
 const source = [
   section('var _modalAutofocusTimer', 'function openSettingsModal()'),
+  section('function compositionNote(', 'function compositionDisplayTitle('),
   section('function renderCards()', 'function renderCardDetail()'),
   section('function renderManualCrossReferences(', '/* ═══ CARD MODALS'),
   section('function openNewCardModal(', 'function generateJitter()'),

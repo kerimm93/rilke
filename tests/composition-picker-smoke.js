@@ -65,7 +65,7 @@ const context = {
 };
 
 const names = [
-  'findComp', 'rootCards', 'childrenOf', 'allActiveCards', 'cardTreeOrder',
+  'refreshCompositionCardUsage', 'findComp', 'rootCards', 'childrenOf', 'allActiveCards', 'cardTreeOrder',
   'normalizeCrossReferenceSearch', 'fuzzySubsequenceScore',
   'crossReferenceSearchScore', 'rankCrossReferenceCards',
   'compositionPickerCards', 'renderCompCardPicker', 'addCardToComp', 'removeCompCard'
