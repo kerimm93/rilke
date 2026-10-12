@@ -23,11 +23,13 @@ class Element {
     this.children = [];
     this.style = {};
     this.attributes = {};
+    this.dataset = {};
     this.listeners = {};
     this.textContent = '';
     this.className = '';
     this.classList = {toggle: (name, enabled) => { this.attributes[name] = enabled; }};
   }
+  querySelectorAll() { return []; }
   appendChild(child) { this.children.push(child); return child; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) { this.listeners[name] = listener; }
@@ -68,18 +70,18 @@ let compositionRenders = 0;
 const escapeText = value => String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 context = {
   S: {}, UI: {tab:'cards', selectedCardUid:'card', selectedCompositionUid:'', searchQuery:'keep filter'},
-  document: {createElement: tag => new Element(tag), querySelectorAll: selector => selector.includes('data-card-tree-uid') ? [] : tabs, activeElement:null},
+  document: {createElement: tag => new Element(tag), querySelectorAll: selector => selector === '.tab-btn' ? tabs : [], activeElement:null},
   $: id => nodes[id] || null,
   esc: escapeText,
   ensureStateWritable: () => true,
   save: () => { saves++; }, saveDebounced: () => { saves++; },
-  _compositionMetadataSaving:false, _storageWriteError:false, _saveTimer:null, clearTimeout(){},
+  _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _saveTimer:null, clearTimeout(){},
   now: () => '2026-10-11T00:00:00.000Z', closeModal(){}, toast(){},
   renderCompCardPicker(){}, renderCardsList(){}, renderCardActions(){},
   renderBrainstorm(){}, shuffleBrainstorm(){}, brainstormOrder:[],
 };
 vm.createContext(context);
-const names = ['findCard', 'findComp', 'compositionNote', 'isCompositionStatus', 'compositionStatus', 'compositionStatusLabel', 'compositionUsageLookup', 'compositionUsageDescription', 'refreshCompositionCardUsage', 'persistCompositionMetadata', 'compositionsForCard', 'compositionDisplayTitle',
+const names = ['findCard', 'findComp', 'compositionNote', 'isCompositionStatus', 'compositionStatus', 'compositionStatusLabel', 'compositionUsageLookup', 'compositionUsageDescription', 'refreshCompositionCardUsage', 'refreshCompositionMetadataViews', 'persistCompositionMetadata', 'compositionsForCard', 'compositionDisplayTitle',
   'openCompositionFromCard', 'renderCompositionBacklinks', 'renderCardDetail', 'renderCards',
   'switchTab', 'renderComposition', 'renderCompList', 'renderCompDetail', 'renderCompPreview',
   'addCardToComp', 'removeCompCard', 'doEditComp', 'doDeleteComp', 'isKeyboardFormControl'];

@@ -13,7 +13,7 @@ const messages = [];
 let writes = [], failed = false, release = null, closes = 0, debounced = 0, clock = 0;
 const context = {
   console, S:{}, UI:{tab:'composition',selectedCardUid:'card',selectedCompositionUid:'a',searchQuery:''},
-  _compositionMetadataSaving:false, _storageWriteError:false, _persistenceReady:true,
+  _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _persistenceReady:true,
   _storageReadOnly:false, _storageBackend:'indexeddb', _syncInProgress:false, _saveTimer:null,
   _writeQueue:Promise.resolve(), _lastStorageError:null, _legacyConflictDetected:false,
   setTimeout, clearTimeout,
@@ -36,7 +36,7 @@ const context = {
 };
 vm.createContext(context);
 const names = ['compositionDisplayTitle','compositionNote','isCompositionStatus','compositionStatus','compositionStatusLabel',
-  'compositionUsageLookup','compositionUsageDescription','refreshCompositionCardUsage',
+  'compositionUsageLookup','compositionUsageDescription','refreshCompositionCardUsage','refreshCompositionMetadataViews','renderCompList',
   'persistCompositionMetadata','doEditComp','changeCompositionStatus','doCreateComp',
   'openEditCompModal','renderCompDetail','renderCardsList','renderCardTree','cardItemHtml',
   'rootCards','childrenOf','allActiveCards','cardTreeOrder','findComp','findCard',
@@ -55,7 +55,8 @@ function reset() {
   context.UI.tab='composition'; context.UI.searchQuery=''; context.UI.selectedCompositionUid='a';
   nodes['m-title']={value:'Gedicht'}; nodes['m-comp-note']={value:''};
   nodes['comp-save']={disabled:false,addEventListener(){}}; nodes['comp-save-feedback']={textContent:''};
-  nodes['comp-detail']={innerHTML:''}; nodes['cards-tree']={innerHTML:''};
+  nodes['comp-list']={innerHTML:''};
+  nodes['comp-detail']={innerHTML:'',querySelectorAll:()=>[]}; nodes['cards-tree']={innerHTML:''};
   context._storageWriteError=false; context._storageReadOnly=false; context._syncInProgress=false;
   writes=[]; messages.length=0; closes=0; debounced=0; failed=false;
 }
@@ -173,6 +174,89 @@ function reset() {
     context[guard]=false;
     context._storageWriteError=false;
   }
+
+  // Detached edit modal: the successfully committed data must still refresh the current view.
+  reset();
+  nodes['m-title'].value='Aktueller Titel'; nodes['m-comp-note'].value='Gespeicherte Anmerkung';
+  release=true;
+  const detachedSave=context.doEditComp('a');
+  await Promise.resolve(); await Promise.resolve();
+  context.closeModal(); delete nodes['m-comp-note'];
+  release(); release=null; await detachedSave;
+  assert(nodes['comp-list'].innerHTML.includes('Aktueller Titel'));
+  assert(nodes['comp-detail'].innerHTML.includes('Gespeicherte Anmerkung'));
+  assert.equal(closes,1,'completed detached save must not close another modal');
+  assert.equal(writes.length,1,'refresh must not save');
+
+  // Replacement modal retains both its editable draft and its focused element.
+  reset(); nodes['m-title'].value='Erster Titel'; nodes['m-comp-note'].value='Erste Notiz';
+  release=true;
+  const replacedSave=context.doEditComp('a');
+  await Promise.resolve(); await Promise.resolve();
+  const otherNote={value:'Noch ungespeicherter anderer Text'};
+  nodes['m-comp-note']=otherNote; nodes['m-title']={value:'Anderes Modal'};
+  context.document.activeElement=otherNote;
+  release(); release=null; await replacedSave;
+  assert.strictEqual(nodes['m-comp-note'],otherNote);
+  assert.equal(otherNote.value,'Noch ungespeicherter anderer Text');
+  assert.equal(nodes['m-title'].value,'Anderes Modal');
+  assert.strictEqual(context.document.activeElement,otherNote);
+  assert.equal(closes,0);
+  assert(nodes['comp-list'].innerHTML.includes('Erster Titel'));
+  assert(nodes['comp-detail'].innerHTML.includes('Erste Notiz'));
+  assert.equal(writes.length,1);
+
+  // A tab switch renders the optimistic status; completion/rollback must update in place.
+  for (const rejectWrite of [true,false]) {
+    reset();
+    context.S._lastExported='2026-01-01T00:00:00.000Z';
+    const timestampBefore=context.S._lastExported;
+    const row={dataset:{cardTreeUid:'card'},classes:new Set(),attributes:{},
+      classList:{toggle(name,on){if(on) row.classes.add(name);else row.classes.delete(name);}},
+      setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];}};
+    const backlink={dataset:{compositionUid:'a'},textContent:'',attributes:{},
+      setAttribute(name,value){this.attributes[name]=value;}};
+    context.document.querySelectorAll=selector=>selector.includes('data-card-tree-uid')?[row]:[backlink];
+    control.value='published'; release=true; failed=rejectWrite;
+    const statusSave=context.changeCompositionStatus('a',control);
+    await Promise.resolve(); await Promise.resolve();
+    context.UI.tab='cards'; context.refreshCompositionMetadataViews();
+    assert(row.classes.has('composition-published'));
+    assert(backlink.textContent.endsWith('Veröffentlicht'));
+    context.document.activeElement=backlink;
+    release(); release=null; await statusSave;
+    const expectedUsage=rejectWrite?'unpublished':'published';
+    assert(row.classes.has('composition-'+expectedUsage));
+    assert.equal(row.classes.size,1);
+    assert.equal(backlink.textContent,'↗ Gedicht · '+(rejectWrite?'Entwurf':'Veröffentlicht'));
+    assert.equal(backlink.attributes['aria-label'],'Komposition Gedicht, '+(rejectWrite?'Entwurf':'Veröffentlicht')+', öffnen');
+    assert.strictEqual(context.document.activeElement,backlink,'refresh must preserve backlink focus');
+    assert.equal(writes.length,1);
+    if(rejectWrite) assert.equal(context.S._lastExported,timestampBefore);
+    else assert.equal(context.S._lastExported,writes[0]._lastExported);
+    // Returning to Composition before another completion must also show the restored state.
+    context.UI.tab='composition'; context.renderCompDetail();
+    assert(nodes['comp-detail'].innerHTML.includes('value="'+(rejectWrite?'draft':'published')+'" selected'));
+    context.document.querySelectorAll=()=>[];
+  }
+
+  reset();
+  let focusControls=[{id:'title'},{id:'status'}], focusedMarkup='';
+  const focusDetail={querySelectorAll:()=>focusControls};
+  Object.defineProperty(focusDetail,'innerHTML',{get:()=>focusedMarkup,set:markup=>{
+    focusedMarkup=markup;
+    focusControls=['title','status'].map(id=>({id,focus(){context.document.activeElement=this;}}));
+  }});
+  nodes['comp-detail']=focusDetail;
+  context.document.activeElement=focusControls[1];
+  context._modalReturnFocusElement=focusControls[0];
+  const beforeRefresh=JSON.stringify(context.S);
+  context.refreshCompositionMetadataViews();
+  assert.strictEqual(context.document.activeElement,focusControls[1],'replace detail control without losing keyboard focus');
+  assert.strictEqual(context._modalReturnFocusElement,focusControls[0],'keep modal return-focus target connected');
+  assert.equal(JSON.stringify(context.S),beforeRefresh);
+  assert.equal(writes.length,0);
+  context._modalReturnFocusElement=null;
 
   reset(); nodes['m-title'].value='Neu'; context.doCreateComp();
   assert.equal(context.S.compositions.at(-1).note,''); assert.equal(context.S.compositions.at(-1).status,'draft');

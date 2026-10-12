@@ -1895,6 +1895,34 @@ function refreshCompositionCardUsage() {
   });
 }
 
+function refreshCompositionMetadataViews() {
+  if (UI.tab === 'cards') {
+    refreshCompositionCardUsage();
+    // Update existing backlink buttons in place so their focus and navigation survive.
+    document.querySelectorAll('#card-composition-backlinks .composition-backlink').forEach(function(button){
+      var comp = findComp(button.dataset.compositionUid);
+      if (!comp) return;
+      var title = compositionDisplayTitle(comp);
+      button.textContent = '↗ ' + title + ' · ' + compositionStatusLabel(comp);
+      button.setAttribute('aria-label', 'Komposition ' + title + ', ' + compositionStatusLabel(comp) + ', öffnen');
+    });
+  } else if (UI.tab === 'composition') {
+    var detail = $('comp-detail');
+    var active = document.activeElement;
+    var controls = detail ? Array.from(detail.querySelectorAll('button, select, [tabindex]')) : [];
+    var focusIndex = controls.indexOf(active);
+    var returnFocusIndex = controls.indexOf(_modalReturnFocusElement);
+    renderCompList(); renderCompDetail();
+    var refreshedControls = detail ? detail.querySelectorAll('button, select, [tabindex]') : [];
+    if (returnFocusIndex >= 0) _modalReturnFocusElement = refreshedControls[returnFocusIndex] || null;
+    // The modal is outside these render targets; only restore a replaced detail control.
+    if (focusIndex >= 0) {
+      var replacement = refreshedControls[focusIndex];
+      if (replacement) replacement.focus({preventScroll:true});
+    }
+  }
+}
+
 function compositionDisplayTitle(comp) {
   return typeof comp.title === 'string' && comp.title.trim() ? comp.title : 'Unbenannte Komposition';
 }
@@ -1922,6 +1950,7 @@ function renderCompositionBacklinks(compositions) {
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn composition-backlink';
+    button.dataset.compositionUid = comp.uid;
     button.textContent = '↗ ' + title + ' · ' + compositionStatusLabel(comp);
     button.setAttribute('aria-label', 'Komposition ' + title + ', ' + compositionStatusLabel(comp) + ', öffnen');
     button.addEventListener('click', function(){ openCompositionFromCard(comp.uid); });
@@ -3279,9 +3308,10 @@ async function persistCompositionMetadata(compUid, fields) {
       if (previous[key].present) comp[key] = previous[key].value;
       else delete comp[key];
     });
+    refreshCompositionMetadataViews();
     return false;
   } finally { _compositionMetadataSaving = false; }
-  refreshCompositionCardUsage();
+  refreshCompositionMetadataViews();
   return true;
 }
 
@@ -3298,7 +3328,7 @@ async function doEditComp(compUid) {
   // Do not close or overwrite a different modal opened while the write was pending.
   if ($('m-comp-note') !== noteInput) return;
   if (!saved) { if (feedback) feedback.textContent = 'Nicht gespeichert. Bitte erneut speichern; Ihre Eingabe bleibt erhalten.'; return; }
-  closeModal(); renderComposition(); toast('Komposition gespeichert');
+  closeModal(); toast('Komposition gespeichert');
 }
 
 async function changeCompositionStatus(compUid, control) {
