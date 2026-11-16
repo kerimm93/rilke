@@ -74,7 +74,10 @@ const assert = require('node:assert/strict');
      const parent=findCard(pair[0]);
      if(defect==='missing') parent.parentUid='not-present';
      if(defect==='cycle') parent.parentUid=parent.uid;
-     if(defect==='collision') S.cards.push({uid:'collision',sid:parent.sid+'.a',status:'archived'});
+     if(defect==='collision') {
+       const children=childrenOf(parent.uid), plan=buildSiblingInsertPlan(parent.uid,children,children.length-1);
+       S.cards.push({uid:'collision',sid:plan.newSid,status:'archived'});
+     }
      if(defect==='gap') {S.cards=S.cards.filter(c=>c.parentUid!==parent.uid);parent.childUids=[];createCardInMemory('existing child','',parent.uid,9,parent.sid+'.c');}
      window.beforeDefect=JSON.stringify(S); renderAim();
    },{stable,defect});
@@ -199,6 +202,32 @@ const assert = require('node:assert/strict');
      assert.equal(await regression.evaluate(()=>_storageWriteError),false);
    } finally {await isolated.close();}
  }
+ // Supported root SID reuse after archiving must not block an unrelated AIM insertion.
+ const reusedContext=await browser.newContext(); const reusedPage=await reusedContext.newPage();
+ try {
+   await reusedPage.goto(process.env.RILKE_TEST_URL || 'http://127.0.0.1:8000/');
+   await reusedPage.waitForFunction(()=>_persistenceReady);
+   const result=await reusedPage.evaluate(async()=>{
+     for(let i=0;i<21;i++) createCard('Root '+i,'',null);
+     const archived=S.cards[S.cards.length-1]; deleteCard(archived.uid);
+     const replacement=createCard('Replacement root','',null);
+     clearTimeout(_saveTimer); _saveTimer=null; await save();
+     const priorCount=S.cards.length;
+     await startAimSession();
+     const pair=aimPairs(aimSession().cardUids)[0];
+     rememberAimDraft('Ein neuer Satz neben alten Nummern.');
+     await advanceAim(0);
+     const card=S.cards.find(c=>c.text==='Ein neuer Satz neben alten Nummern.');
+     return {archivedSid:archived.sid,replacementSid:replacement.sid,position:aimSession().position,
+       count:S.cards.length,priorCount,parent:card && card.parentUid,expectedParent:pair[0],
+       relation:card && manualRelationBetweenCards(card.uid,pair[1]),sid:card && card.sid};
+   });
+   assert.equal(result.archivedSid,'21'); assert.equal(result.replacementSid,'21');
+   assert.equal(result.position,1); assert.equal(result.count,result.priorCount+1);
+   assert.equal(result.parent,result.expectedParent); assert.equal(result.relation.origin,'manual');
+   await reusedPage.reload(); await reusedPage.waitForFunction(()=>_persistenceReady);
+   assert(await reusedPage.evaluate(()=>aimSession().position===1 && S.cards.some(c=>c.text==='Ein neuer Satz neben alten Nummern.')));
+ } finally {await reusedContext.close();}
  assert.deepEqual(errors,[]);
  console.log('PASS browser (also whitespace, skip cancellation, parent/cycle/SID guards, order gaps, in-flight duplicates, backup/sync isolation, completion, insufficient cards): create under A/B, card view and manual relations, skip, reload/order/draft recovery, IDB failure and retry, archived card, mobile width, keyboard/focus.');
  } finally { await browser.close(); }

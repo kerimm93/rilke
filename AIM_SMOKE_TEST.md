@@ -40,6 +40,7 @@ Am 16.11.2026 erfolgreich ausgeführt:
 - Simulierter Write-Fehler: sichtbarer und tatsächlich persistierter State bleiben unverändert; Text bleibt erhalten; Retry erzeugt genau eine Karte.
 - Ausstehender gewöhnlicher Kartensave bei fehlgeschlagenem AIM-Start und AIM-Fortschritt: Debounce wird wiederhergestellt; die Kartenänderung bleibt nach Reload erhalten, AIM-Karte/Relation/Fortschritt bleiben ungespeichert. Der neue Regressionstest schlägt ohne den Fix fehl.
 - Verzögerter Write und Doppelauslösung: genau ein Write; keine vorzeitig sichtbaren Kandidatendaten; gleichzeitiges Bearbeiten und Sync blockiert.
+- SID-Prüfung nur für die neue Karte und tatsächlich umbenannte Karten: bestehende, unbeteiligte SID-Dopplungen bleiben erlaubt. Browserregression mit 21 Root-Karten, Archivierung der letzten Karte und regulärer Wiederverwendung von SID `21`; AIM speichert danach erfolgreich einschließlich Reload. Neue und durch Rebasing eingeführte Kollisionen bleiben gesperrt.
 - Archivierte und entfernte Ausgangskarten, ungültige Parent-Referenz, Zyklus, SID-Konflikt und vorhandene Order-Lücke.
 - Tatsächlich erzeugtes Recovery-ZIP enthält den Sessionfortschritt in `state/S.json`; Gist-State enthält keine Sessions und die Materialisierung erhält die lokale Session.
 - Offline mit aktivem Service Worker: Fragment unter B speichern, offline neu laden und Karte sowie Sessionposition wiederfinden.

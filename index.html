@@ -2594,6 +2594,18 @@ function aimSession() {
   });
 }
 
+// Existing SID reuse outside this insertion is permitted (including archived cards).
+function aimInsertionHasSidConflict(plan) {
+  var rebased = plan.changes.filter(function(change){ return change.card.sid !== change.sid; });
+  var moving = new Set(rebased.map(function(change){ return change.card.uid; }));
+  var targets = new Set([plan.newSid]);
+  for (var i = 0; i < rebased.length; i++) {
+    if (targets.has(rebased[i].sid)) return true;
+    targets.add(rebased[i].sid);
+  }
+  return S.cards.some(function(card){ return !moving.has(card.uid) && targets.has(card.sid); });
+}
+
 function aimDraftKey(session) { return 'rilke_aim_draft_' + session.uid + '_' + session.position; }
 function aimDraft(session) {
   var key = aimDraftKey(session);
@@ -2715,14 +2727,8 @@ async function advanceAim(parentIndex) {
       var children = childrenOf(parent.uid);
       var plan = buildSiblingInsertPlan(parent.uid, children, children.length - 1);
       if (!plan) throw new Error('Die Kartenhierarchie ist nicht verwendbar. Bitte zuerst im Zettelkasten prüfen.');
-      // Guard against archived/global SID collisions and cycles before any candidate mutation.
-      var proposed = new Map(plan.changes.map(function(c){ return [c.card.uid, c.sid]; }));
-      var occupied = new Set([plan.newSid]);
-      S.cards.forEach(function(c){
-        var sid = proposed.has(c.uid) ? proposed.get(c.uid) : c.sid;
-        if (occupied.has(sid)) throw new Error('SID-Konflikt: Bitte die Kartenhierarchie zuerst prüfen.');
-        occupied.add(sid);
-      });
+      // Reject collisions introduced by the new child or actual SID rebases only.
+      if (aimInsertionHasSidConflict(plan)) throw new Error('SID-Konflikt: Bitte die Kartenhierarchie zuerst prüfen.');
       var ts = now(); applySiblingInsertPlan(plan, ts);
       var card = createCardInMemory(text.trim(), '', parent.uid, plan.newOrder, plan.newSid, ts);
       // This synchronous candidate build is writable; retrying an AIM write may clear a prior storage error only after commit.

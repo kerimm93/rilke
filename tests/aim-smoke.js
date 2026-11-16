@@ -29,3 +29,18 @@ assert.equal(context.aimSession(),undefined);
 context.S.matrixSessions[0].position=1; context.S.matrixSessions[0].version=2;
 assert.equal(context.aimSession(),undefined);
 console.log('AIM matrix smoke passed: torus, diagonals, 80 unique pairs, degree eight, stable order, invalid sessions');
+
+// Only new or actually rebased SIDs participate in insertion collision checks.
+const a={uid:'a',sid:'1.a'}, b={uid:'b',sid:'1.b'};
+context.S.cards=[a,b,{uid:'archived',sid:'21',status:'archived'},{uid:'replacement',sid:'21',status:'draft'}];
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[]}),false);
+// An unchanged SID in the insertion plan must not turn an existing duplicate into a blocker.
+context.S.cards.push({uid:'old-child',sid:'1.a',status:'archived'});
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[{card:a,sid:'1.a'}]}),false);
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.a',changes:[]}),true);
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[{card:a,sid:'1.b'}]}),true);
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[{card:a,sid:'1.d'},{card:b,sid:'1.d'}]}),true);
+context.S.cards=[a,b];
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[{card:a,sid:'1.c'}]}),true);
+assert.equal(context.aimInsertionHasSidConflict({newSid:'1.c',changes:[{card:a,sid:'1.b'},{card:b,sid:'1.a'}]}),false);
+console.log('AIM insertion SID smoke passed: unrelated reuse allowed, new/rebased collisions rejected');
