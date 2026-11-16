@@ -2637,6 +2637,7 @@ async function commitAimChange(change) {
   } catch(e) { toast(e.message); return false; }
   finally { S = original; }
   _aimSaving = true;
+  var hadPendingSave = _saveTimer !== null;
   clearTimeout(_saveTimer); _saveTimer = null;
   document.querySelectorAll('#aim-workspace button, #aim-text').forEach(function(el){ el.disabled = true; });
   try {
@@ -2648,6 +2649,9 @@ async function commitAimChange(change) {
     return true;
   } catch(e) {
     // No candidate entities were exposed in S; a failed IDB transaction commits nothing.
+    // The candidate also carried ordinary edits whose debounce we cancelled.
+    // If it fails, restore their save so those edits cannot silently stay memory-only.
+    if (hadPendingSave) saveDebounced();
     handleStorageError('AIM konnte nicht gespeichert werden', e);
     toast('Speichern fehlgeschlagen. Dein Text bleibt erhalten; bitte erneut versuchen.');
     return false;

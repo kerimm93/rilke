@@ -38,6 +38,7 @@ Am 16.11.2026 erfolgreich ausgeführt:
 - Überspringen ohne neue Inhaltsdaten; Schutz eines vorhandenen Entwurfs bei abgebrochener Bestätigung; Whitespace erzeugt keine Karte.
 - Reload mit identischer Matrix, Paarposition und wiederhergestelltem Entwurf.
 - Simulierter Write-Fehler: sichtbarer und tatsächlich persistierter State bleiben unverändert; Text bleibt erhalten; Retry erzeugt genau eine Karte.
+- Ausstehender gewöhnlicher Kartensave bei fehlgeschlagenem AIM-Start und AIM-Fortschritt: Debounce wird wiederhergestellt; die Kartenänderung bleibt nach Reload erhalten, AIM-Karte/Relation/Fortschritt bleiben ungespeichert. Der neue Regressionstest schlägt ohne den Fix fehl.
 - Verzögerter Write und Doppelauslösung: genau ein Write; keine vorzeitig sichtbaren Kandidatendaten; gleichzeitiges Bearbeiten und Sync blockiert.
 - Archivierte und entfernte Ausgangskarten, ungültige Parent-Referenz, Zyklus, SID-Konflikt und vorhandene Order-Lücke.
 - Tatsächlich erzeugtes Recovery-ZIP enthält den Sessionfortschritt in `state/S.json`; Gist-State enthält keine Sessions und die Materialisierung erhält die lokale Session.

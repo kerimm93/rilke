@@ -158,6 +158,47 @@ const assert = require('node:assert/strict');
  await page.getByRole('button',{name:'Kartenboard',exact:true}).click();
  await page.evaluate(()=>brainstormSelectCard(brainstormOrder[0]));
  assert.equal(await page.evaluate(()=>brainstormRelationsForCard(brainstormOrder[0]).length),4);
+ // A failed AIM transaction must not swallow a pending ordinary card save.
+ for (const action of ['start','advance']) {
+   const isolated=await browser.newContext(); const regression=await isolated.newPage();
+   try {
+     await regression.goto(process.env.RILKE_TEST_URL || 'http://127.0.0.1:8000/');
+     await regression.waitForFunction(()=>_persistenceReady);
+     const outcome=await regression.evaluate(async action=>{
+       for(let i=0;i<20;i++) createCardInMemory('Pending-save fixture '+i,'',null);
+       await save();
+       if(action==='advance') await startAimSession();
+       window.baseSession=JSON.stringify(S.matrixSessions);
+       window.baseRelations=JSON.stringify(S.pairRelations);
+       window.baselineCount=S.cards.length;
+       window.regressionRealWrite=idbSetState; window.aimFailures=0; window.ordinarySaved=false;
+       idbSetState=async snapshot=>{
+         if(JSON.stringify(snapshot.matrixSessions)!==window.baseSession) {
+           window.aimFailures++; throw Error('AIM-only write failure');
+         }
+         await window.regressionRealWrite(snapshot); window.ordinarySaved=true;
+       };
+       const edited=S.cards[0];
+       updateCard(edited.uid,{text:'Ordinary edit survives failed AIM '+action});
+       if(action==='advance') {
+         // The editor is intentionally absent here; advance reads the retained draft.
+         rememberAimDraft('AIM fragment must not be committed');
+         await advanceAim(0);
+       } else await startAimSession();
+       return {uid:edited.uid,text:edited.text};
+     },action);
+     await regression.waitForFunction(()=>window.ordinarySaved, null, {timeout:5000});
+     assert.equal(await regression.evaluate(async uid=>(await idbGetState()).cards.find(c=>c.uid===uid).text,outcome.uid),outcome.text);
+     assert.equal(await regression.evaluate(()=>window.aimFailures),1);
+     assert(await regression.evaluate(async()=>{
+       const disk=await idbGetState();
+       return disk.cards.length===window.baselineCount && JSON.stringify(disk.pairRelations)===window.baseRelations && JSON.stringify(disk.matrixSessions)===window.baseSession;
+     }));
+     await regression.reload(); await regression.waitForFunction(()=>_persistenceReady);
+     assert.equal(await regression.evaluate(uid=>findCard(uid).text,outcome.uid),outcome.text);
+     assert.equal(await regression.evaluate(()=>_storageWriteError),false);
+   } finally {await isolated.close();}
+ }
  assert.deepEqual(errors,[]);
  console.log('PASS browser (also whitespace, skip cancellation, parent/cycle/SID guards, order gaps, in-flight duplicates, backup/sync isolation, completion, insufficient cards): create under A/B, card view and manual relations, skip, reload/order/draft recovery, IDB failure and retry, archived card, mobile width, keyboard/focus.');
  } finally { await browser.close(); }
