@@ -146,6 +146,20 @@ Danach die App über `http://localhost:8000/` öffnen.
 
 ---
 
+## AIM · Schreiben
+
+Unter **Brainstorm → AIM · Schreiben** lässt sich eine lokale Schreibsession starten oder fortsetzen. Mindestens 20 unterschiedliche aktive Karten sind nötig. Ihre einmal zufällig erzeugte 4×5-Anordnung ergibt mit acht zyklischen Nachbarn genau 80 eindeutige Kartenpaare.
+
+Zu jedem Paar kannst du ein mehrzeiliges Fragment schreiben und **Unter A speichern** oder **Unter B speichern** wählen. Das Fragment wird hierarchisch als Kind eingeordnet und erhält einen manuellen Querverweis zur jeweils anderen Ausgangskarte. Erst wenn Karte, Verweis und Fortschritt gemeinsam in IndexedDB gesichert sind, erscheint das nächste Paar. Die bloße Paaranzeige erzeugt keine Relationen. Das bisherige Kartenboard bleibt separat verfügbar.
+
+**Überspringen** erzeugt keine Karte und keinen Verweis. Bei vorhandenem Entwurf wird das Verwerfen bestätigt. Fortschritt und feste Kartenreihenfolge bleiben nach Reload erhalten; öffne dazu wieder AIM. Unter „Bisherige Paare“ sind gespeicherte und übersprungene Verbindungen nachvollziehbar. Es gibt jeweils eine aktuelle AIM-Session. Eine neue Session ersetzt sie nach Bestätigung. Fehlende oder archivierte Ausgangskarten können nicht als Parent verwendet werden; solche Paare lassen sich ausdrücklich überspringen.
+
+AIM-Sessions liegen lokal in `matrixSessions` und im ZIP unter `state/S.json`. Sie werden nicht per Gist synchronisiert; neue Karten und ihre manuellen Verweise nutzen den bestehenden Sync. Ungespeicherter Schreibtext wird separat auf diesem Gerät in `localStorage` zwischengesichert und ist kein Bestandteil des ZIP-Backups oder Gist-Syncs. Scheitert diese Zwischensicherung, zeigt die App einen Hinweis. Vor einem Gerätewechsel bitte Fragmente speichern.
+
+Automatisierte Prüfungen und die praktische Abnahme stehen in [AIM_SMOKE_TEST.md](AIM_SMOKE_TEST.md).
+
+---
+
 ## Deployment über GitHub Pages
 
 Die App kann als statische Website über GitHub Pages veröffentlicht werden.

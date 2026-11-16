@@ -95,6 +95,7 @@ Object.defineProperty(container, 'innerHTML', {
 });
 
 const context = {
+  window:{addEventListener(){}},
   console,
   S:{cards, pairRelations:[{uid:'rel1', fromCardUid:'1', toCardUid:'2', note:''}], compositions:[]},
   UI:{tab:'cards', selectedCardUid:'', searchQuery:''},
