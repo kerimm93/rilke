@@ -75,7 +75,7 @@ context = {
   esc: escapeText,
   ensureStateWritable: () => true,
   save: () => { saves++; }, saveDebounced: () => { saves++; },
-  _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _saveTimer:null, clearTimeout(){},
+  _aimSaving:false, _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _saveTimer:null, clearTimeout(){},
   now: () => '2026-10-11T00:00:00.000Z', closeModal(){}, toast(){},
   renderCompCardPicker(){}, renderCardsList(){}, renderCardActions(){},
   renderBrainstorm(){}, shuffleBrainstorm(){}, brainstormOrder:[],

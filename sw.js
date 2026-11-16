@@ -1,4 +1,4 @@
-var CACHE_VERSION = 'v1';
+var CACHE_VERSION = 'v2';
 var APP_ROOT_PATH = new URL('./', self.location.href).pathname;
 var CACHE_PREFIX = 'rilke-app-' + encodeURIComponent(APP_ROOT_PATH) + '-';
 var CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;

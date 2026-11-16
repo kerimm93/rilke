@@ -13,7 +13,7 @@ const messages = [];
 let writes = [], failed = false, release = null, closes = 0, debounced = 0, clock = 0;
 const context = {
   console, S:{}, UI:{tab:'composition',selectedCardUid:'card',selectedCompositionUid:'a',searchQuery:''},
-  _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _persistenceReady:true,
+  _aimSaving:false, _modalReturnFocusElement:null, _compositionMetadataSaving:false, _storageWriteError:false, _persistenceReady:true,
   _storageReadOnly:false, _storageBackend:'indexeddb', _syncInProgress:false, _saveTimer:null,
   _writeQueue:Promise.resolve(), _lastStorageError:null, _legacyConflictDetected:false,
   setTimeout, clearTimeout,
