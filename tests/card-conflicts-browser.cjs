@@ -148,7 +148,23 @@ const assert = require('node:assert/strict');
     assert.equal(await a.evaluate(() => S.cards[0].text), 'Lokale Fassung');
     await start(a); await dialog.waitFor();
     assert.equal(await a.getByLabel('Text Karte 0', { exact:true }).inputValue(), 'Endfassung');
-    await apply(a);
+    // Edits are locked while the asynchronous final draft write is in flight.
+    await a.evaluate(async () => {
+      await _cardConflictDraftWriteQueue;
+      const original = accessCardConflictDraftStore;
+      accessCardConflictDraftStore = function(mode,operation) {
+        if (mode==='readwrite') {
+          accessCardConflictDraftStore = original;
+          return new Promise(resolve => { window.releaseDraftWrite=resolve; }).then(() => original(mode,operation));
+        }
+        return original(mode,operation);
+      };
+    });
+    await a.getByRole('button', {name:'Entscheidungen prüfen und synchronisieren'}).click();
+    await a.waitForFunction(() => Boolean(window.releaseDraftWrite));
+    assert.equal(await a.getByLabel('Text Karte 0',{exact:true}).isDisabled(),true);
+    assert.equal(await a.getByLabel('Entscheidung Karte 0',{exact:true}).isDisabled(),true);
+    await a.evaluate(() => window.releaseDraftWrite()); await finish(a);
     assert.equal(await a.evaluate(() => S.cards[0].text), 'Endfassung');
     assert.equal(await a.evaluate(() => _syncUiState.status), 'success');
     // Instance B adopts the result, then both independently prove no-op convergence.
@@ -175,17 +191,18 @@ const assert = require('node:assert/strict');
     await prepare(a, 'Lokale Fassung'); await remoteVersion(); await start(a); await dialog.waitFor();
     await choose(a, 'merge');
     await a.evaluate(() => {
-      window.originalStorageSet = Storage.prototype.setItem;
-      Storage.prototype.setItem = function(key, value) {
-        if (key === CARD_CONFLICT_DRAFT_KEY) throw new Error('Injected quota failure');
-        return window.originalStorageSet.call(this, key, value);
+      window.originalDraftStore = accessCardConflictDraftStore;
+      accessCardConflictDraftStore = function(mode, operation) {
+        if (mode === 'readwrite') return Promise.reject(new Error('Injected draft write failure'));
+        return window.originalDraftStore(mode, operation);
       };
     });
     await a.getByLabel('Text Karte 0', { exact:true }).fill('Speicherentwurf');
     await a.getByRole('button', { name:'Entscheidungen prüfen und synchronisieren' }).click();
+    await a.waitForFunction(() => !document.querySelector('dialog .btn-accent').disabled);
     assert.equal(await dialog.isVisible(), true);
     assert.equal(await a.evaluate(() => S.cards[0].text), 'Lokale Fassung');
-    await a.evaluate(() => { Storage.prototype.setItem = window.originalStorageSet; });
+    await a.evaluate(() => { accessCardConflictDraftStore = window.originalDraftStore; });
     await a.getByRole('button', { name:'Abbrechen', exact:true }).click(); await finish(a);
     await start(a); await dialog.waitFor();
     assert.equal(await a.getByLabel('Text Karte 0', { exact:true }).inputValue(), 'Speicherentwurf');
@@ -200,6 +217,98 @@ const assert = require('node:assert/strict');
     assert.equal(await a.evaluate(() => _syncUiState.status), 'success');
     await start(a); await finish(a);
     assert.equal(await a.evaluate(() => _syncUiState.resultKind), 'noop');
+    // Large unrelated libraries never enter the draft key or stored record.
+    const storage = await a.evaluate(async () => {
+      const local = createDefaultState();
+      local.cards = Array.from({length:2000}, (_, index) => ({uid:'large-'+index,sid:String(index+1),text:'z'.repeat(3000),parentUid:null,childUids:[],order:index,status:'active'}));
+      local.cards[0].text = 'Lokaler Konflikt';
+      const remoteState = cloneState(local); remoteState.cards[0].text = 'Gist-Konflikt';
+      const remote = {revision:'large-revision',state:remoteState};
+      const id = await cardConflictDraftId('large-gist',remote,local);
+      await loadCardConflictDrafts('large-gist');
+      _cardConflictDrafts[id] = {id,gistId:'large-gist',revision:remote.revision,conflicts:collectCardConflicts(local,remoteState),decisions:{},updatedAt:now()};
+      // Simulate a full localStorage. Draft editing and confirmation still use IDB.
+      const set = Storage.prototype.setItem;
+      let localWrites = 0;
+      Storage.prototype.setItem = function() { localWrites++; throw new Error('localStorage full'); };
+      try {
+        for (let edit=0; edit<12; edit++) await saveCardConflictDraft(id, {'large-0':{mode:'merge',structure:'local',text:'Entwurf '+edit,comment:''}});
+      } finally { Storage.prototype.setItem = set; }
+      const records = await accessCardConflictDraftStore('readonly', store => {
+        const result = []; const request = store.get(CARD_CONFLICT_IDB_PREFIX+id);
+        request.onsuccess = () => result.push(request.result); return result;
+      });
+      // An additional conflicting card changes the identity.
+      local.cards[1].text = 'Andere Karte geändert';
+      const sameId = await cardConflictDraftId('large-gist',remote,local);
+      return {keyLength:id.length,bytes:JSON.stringify(records).length,localWrites,conflicts:records[0].conflicts.length,text:records[0].decisions['large-0'].text,sameId:sameId===id};
+    });
+    assert.equal(storage.keyLength,64); assert.ok(storage.bytes<5000);
+    assert.equal(storage.localWrites,0); assert.equal(storage.conflicts,1); assert.equal(storage.text,'Entwurf 11');
+    // A new conflict changes the identity, even when it concerns an unrelated card.
+    assert.equal(storage.sameId,false);
+    // Migration preserves old text, commits atomically and can be retried after failure.
+    const migration = await a.evaluate(async () => {
+      const local = createDefaultState();
+      local.cards = [{uid:'legacy-card',sid:'1',text:'Lokal',parentUid:null,childUids:[],order:0,status:'active'}];
+      const remote = cloneState(local); remote.cards[0].text = 'Gist';
+      const legacyKey = stableStringify(['legacy-gist','legacy-revision',buildRilkeSyncComparableState(local),buildRilkeSyncComparableState(remote)]);
+      const decisions = {'legacy-card':{mode:'merge',structure:'local',text:'Alter Entwurf',comment:'Erhalten'}};
+      const legacyRaw = JSON.stringify({[legacyKey]:decisions});
+      localStorage.setItem(CARD_CONFLICT_DRAFT_KEY,legacyRaw);
+      const store = accessCardConflictDraftStore;
+      accessCardConflictDraftStore = () => Promise.reject(new Error('Migration unavailable'));
+      let failed = false;
+      try { await migrateCardConflictDrafts(); } catch(e) { failed=true; }
+      finally { accessCardConflictDraftStore = store; }
+      const retained = localStorage.getItem(CARD_CONFLICT_DRAFT_KEY)===legacyRaw;
+      await loadCardConflictDrafts('legacy-gist');
+      const id = await cardConflictDraftId('legacy-gist',{revision:'legacy-revision',state:remote},local);
+      const restored = readCardConflictDraft(id)['legacy-card'].text;
+      const removed = localStorage.getItem(CARD_CONFLICT_DRAFT_KEY)===null;
+      await saveCardConflictDraft(id,{'legacy-card':{...decisions['legacy-card'],text:'Neuer Entwurf'}});
+      localStorage.setItem(CARD_CONFLICT_DRAFT_KEY,legacyRaw);
+      await migrateCardConflictDrafts();
+      delete _cardConflictDrafts[id]; await loadCardConflictDrafts('legacy-gist');
+      return {failed,retained,removed,restored,newer:readCardConflictDraft(id)['legacy-card'].text};
+    });
+    assert.deepEqual(migration,{failed:true,retained:true,removed:true,restored:'Alter Entwurf',newer:'Neuer Entwurf'});
+    // Independently added children survive every parent conflict choice and subsequent sync.
+    for (const mode of ['local','remote','merge']) {
+      await prepare(a, base.cards[0].text);
+      await prepare(b, base.cards[0].text);
+      await a.evaluate(async () => { createCardInMemory('Lokal hinzugefügt','', 'poem'); clearTimeout(_saveTimer); _saveTimer=null; await save(); });
+      await b.evaluate(async () => { createCardInMemory('Gist hinzugefügt','', 'poem'); clearTimeout(_saveTimer); _saveTimer=null; await save(); });
+      const remoteChildState = await b.evaluate(() => cloneState(S));
+      publish(await envelope(remoteChildState,baseFp));
+      await start(a); await dialog.waitFor(); await choose(a,mode); await apply(a);
+      assert.equal(await a.evaluate(() => _syncUiState.status),'success');
+      const hierarchy = await a.evaluate(() => {
+        validateConflictHierarchy(S);
+        const parent = S.cards.find(card=>card.uid==='poem');
+        return {children:parent.childUids.length,texts:S.cards.filter(card=>card.parentUid==='poem').map(card=>card.text).sort(),sids:S.cards.map(card=>card.sid)};
+      });
+      assert.equal(hierarchy.children,2);
+      assert.deepEqual(hierarchy.texts,['Gist hinzugefügt','Lokal hinzugefügt']);
+      assert.equal(new Set(hierarchy.sids).size,3);
+      // B starts from the confirmed remote revision it published.
+      const publishedRevision = history[1].version;
+      await b.evaluate(({state,rev}) => rememberConfirmedSyncBaseline(fingerprintComparableState(buildRilkeSyncComparableState(state)),rev),{state:remoteChildState,rev:publishedRevision});
+      await start(b); await finish(b);
+      const writesBefore = writes;
+      for (const page of pages) {
+        await start(page); await finish(page);
+        assert.equal(await page.evaluate(() => _syncUiState.resultKind),'noop');
+      }
+      assert.equal(writes,writesBefore);
+      assert.equal(await a.evaluate(() => getComparableStateString(S)),await b.evaluate(() => getComparableStateString(S)));
+      const completed = await a.evaluate(async () => {
+        // Confirm no completed record for the selected parent comparison remains.
+        await loadCardConflictDrafts('test-gist');
+        return Object.values(_cardConflictDrafts).filter(record => record.gistId==='test-gist' && record.conflicts.some(conflict=>conflict.local.childUids?.length===1 && conflict.remote.childUids?.length===1)).length;
+      });
+      assert.equal(completed,0);
+    }
     // Structural conflicts show human-readable references and reject cycles.
     const validation = await a.evaluate(() => {
       const local = cloneState(S), remote = cloneState(S);
@@ -213,7 +322,7 @@ const assert = require('node:assert/strict');
       return { fields, reference, rejected };
     });
     assert.deepEqual(validation.fields, ['order']);
-    assert.match(validation.reference, /2 · Erstsync lokal/); assert.equal(validation.rejected, true);
-    console.log('PASS card conflicts: comparison/baseline, structural fields, merge draft/reload, cancellation, stale local/remote decisions, IndexedDB/PATCH failures, retry, two isolated instances and bilateral no-op convergence (mock Gist HTTP, real crypto).');
+    assert.match(validation.reference, /2 · Die Füße schwer/); assert.equal(validation.rejected, true);
+    console.log('PASS card conflicts: comparison/baseline, all decisions, draft/reload, stale decisions, write failures, atomic IDB guards, compact IDB drafts for 6 MB library, migration/retry/cleanup, concurrent children for local/remote/merge, bilateral no-op convergence (two instances, mock Gist HTTP, real crypto).');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
