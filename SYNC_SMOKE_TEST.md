@@ -143,3 +143,21 @@ Für jeden Fall Datum, Browser, tatsächlich beobachtetes Datenresultat, Ergebni
 - **Aktion:** Manuellen Sync starten; während der Verarbeitung muss „2 Pending-Revision(en) zu verarbeiten“ sichtbar sein.
 - **Unmittelbar nach erfolgreicher Pending-Verarbeitung:** Während der restliche Sync noch läuft, ist „zu verarbeiten“ verschwunden; stattdessen darf „2 Pending-Revision(en) verarbeitet“ erscheinen.
 - **Endstatus:** Die verarbeitete Anzahl bleibt als Detail erhalten, es erscheint kein „zu verarbeiten“-Hinweis, und die fachliche Endkategorie des gesamten Laufs bleibt maßgeblich.
+
+## Kartenkonflikte vergleichen und auflösen
+
+Bei divergierenden Karten öffnet der manuelle Sync einen Vergleich mit lokaler Version, Gist-Version und, sofern verifiziert, dem Ausgangsstand aus der bestätigten Baseline. Die Ansicht zeigt Text, Kommentar, SID, Parent, Kinderliste, Reihenfolge, Status und weitere abweichende Felder einschließlich Zeitstempeln. Kartenreferenzen enthalten SID, Textanfang und UID.
+
+Für jede Karte ist eine bewusste Entscheidung erforderlich. Lokale Version und Gist-Version übernehmen jeweils das vollständige Kartenobjekt. Beim Zusammenführen sind Text und Kommentar frei bearbeitbar, während Struktur und weitere Felder aus einer der beiden Versionen stammen. Unverträgliche Hierarchieentscheidungen blockieren die Übernahme.
+
+Entwürfe und verglichene Kartenstände bleiben lokal im separaten localStorage-Schlüssel `rilke_card_conflict_drafts_v1`. Sie werden weder synchronisiert noch in ZIP-Backups aufgenommen. Nach Abbruch oder Schreibfehler kann der Vergleich erneut geöffnet werden. Bei geänderten Ausgangsdaten lässt sich der Text eines früheren Entwurfs ausdrücklich laden und erneut vergleichen. Während der Ansicht sind gewöhnliche App-Änderungen durch die bestehende Sync-Sperre blockiert. Vor Übernahme werden zusätzlich der lokale Gesamtstand, Baseline, Sync-Zugangskonfiguration und die aktuelle Gist-Revision erneut geprüft. Der anschließende lokale Write prüft den erwarteten IndexedDB-Stand innerhalb derselben Schreibtransaktion. Dies schützt auch vor einem anderen Tab zwischen Vergleich und Commit.
+
+Automatisierte Browserprüfung mit laufendem lokalem HTTP-Server und vorhandenem Playwright/Chromium ausführen.
+
+```bash
+python3 -m http.server 8000 --bind 127.0.0.1
+# In einem zweiten Terminal, ebenfalls im Repository
+node tests/card-conflicts-browser.cjs
+```
+
+Der Test verwendet zwei getrennte Browserkontexte mit eigener IndexedDB, echte Ver- und Entschlüsselung und eine simulierte Gist-HTTP-API. Er prüft Vergleich/Baseline, alle drei Entscheidungen, Entwurfswiederaufnahme nach Reload, Abbruch, veraltete lokale und entfernte Daten, IndexedDB- und Gist-Schreibfehler, fehlgeschlagene Entwurfsspeicherung, konkurrierende IndexedDB-Writes vor und während der Übernahme, erneuten Sync und beidseitige No-op-Konvergenz. Die manuelle Abnahme gegen einen echten Gist gemäß den obigen Zwei-Browser-Testfällen bleibt zusätzlich erforderlich, um GitHub-Netzwerk- und Nebenläufigkeitsverhalten zu prüfen.
